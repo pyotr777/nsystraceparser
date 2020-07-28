@@ -10,11 +10,11 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Tracing Series with a variable parameter. v0.02.')
+print('Running Trace Series with a variable parameter. v0.02.')
 
 parser = argparse.ArgumentParser(
     description=
-    'Run series of NVIDIA Nsight System tracer for commands with a varying parameter.')
+    'Run series of NVIDIA Nsight Systems tracer for commands with a varying parameter.')
 
 parser.add_argument("--iter", type=int, default=10,
                     help="Number of iterations to profile.")
