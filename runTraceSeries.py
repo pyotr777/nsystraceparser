@@ -33,14 +33,13 @@ args = parser.parse_args()
 # Change command
 # Use $p placeholder for the varying parameter
 command_template = 'python3 ../mlbenchmarks/pytorch/examples/imagenet/imagenet.py --dataset-size 50000'\
-' --arch resnet50 -e 1 --iter {} -b $p --lr 0.02 --workers 3 --nvtx --imnet /host/Imagenet/images/'.format(
+' --arch resnet50 -e 1 --iter {} -b $p --workers 3 --nvtx --imnet /host/Imagenet/images/'.format(
     args.iter)
 print('Command to execute:')
 print(command_template)
 # Change parameter values
 if args.parameter is None:
-    parameters = [5, 6, 7, 8, 9, 10, 12, 15] + list(range(20, 501, 10))
-    parameters = [40, 50]
+    parameters = [5, 6, 7, 8, 9, 10, 12, 15] + list(range(20, 51, 10))
 else:
     parameters = args.parameter
 print("Parameter values: {}".format(parameters))
