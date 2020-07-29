@@ -17,7 +17,7 @@ import numpy as np
 import re
 import sys
 
-print('Extracting data from a JSON trace file. v.0.01.')
+print('Extracting data from a JSON trace file. v.0.03.')
 
 parser = argparse.ArgumentParser(
     description='NVIDIA NSight Systems JSON trace parser. Extracts time of events.')
@@ -153,6 +153,8 @@ def searchEventPattern(row, event_names=None, debug=False):
 # Parse an array of nvtx range names for iteration number
 def GetIterationNumber(nvtx_arr):
     nvtx_name = [n for n in nvtx_arr if 'iteration' in n.lower()]
+    if len(nvtx_name) == 0:
+        return None
     nvtx_name = nvtx_name[0]  # Convert list to string
     s = nvtx_name.replace('Iteration ', '')
     try:
@@ -240,12 +242,16 @@ if API_events.shape[0] == 0:
 # Store API event names
 API_events['name'] = API_events['TraceProcessEvent.name'].apply(
     lambda x: event_names_df[event_names_df['id'] == x]['value'].values[0])
-print("Columns\n{}".format(API_events.columns))
+# print("Columns\n{}".format(API_events.columns))
 # display(API_events)
+print("Unique API events:")
 print(API_events['name'].unique())
 
 # Search NVTX reagons encompassing API events
 API_events['NVTX'] = API_events.apply(NVTXforAPIevent, axis=1)
+
+print("API with NVTX:")
+print(API_events.head(2))
 
 # Search CUDA API calls for each API event
 cudakernels = None
@@ -254,17 +260,39 @@ for _, row in API_events.iterrows():
     end = row.loc['end']
     APIname = row['name']
     NVTX_arr = row['NVTX']
+    NVTX_s = ','.join(row['NVTX'])
     df_ = lookupAPIandKernelsInTimerange(start, end, traces, kernels, names)
-    print('{}kernels for {:} {} ({:.4f}-{:.4f})'.format(df_.shape[0], APIname, NVTX_arr,
-                                                        start, end))
+    # print('{}kernels for {:} {} ({:.4f}-{:.4f})'.format(df_.shape[0], APIname, NVTX_s,
+    #                                                     start, end))
     df_['API event'] = APIname
-    df_['NVTX'] = df_.apply(lambda x: NVTX_arr, axis=1)
+    df_['NVTX_arr'] = df_.apply(lambda x: NVTX_arr, axis=1)
+    df_['NVTX'] = NVTX_s
+
     #     display(df_)
     if cudakernels is None:
         cudakernels = df_
     else:
         cudakernels = cudakernels.append(df_, ignore_index=True)
 
-cudakernels['iteration'] = cudakernels['NVTX'].apply(GetIterationNumber)
-agg_kernels = cudakernels[['duration', 'iteration']].groupby(['iteration']).sum()
+cudakernels['iteration'] = cudakernels['NVTX_arr'].apply(GetIterationNumber)
+# If NVTX ranges do not include Iteration, 'iteration' column will have None-s.
+cudakernels.dropna(axis=1, how='all', inplace=True)
+if 'iteration' in cudakernels.columns:
+    print('Have iterations in NVTX.')
+    # print(cudakernels['iterations'])
+    use_columns = ['duration', 'NVTX', 'API event', 'iteration']
+else:
+    print('No iterations data.')
+    use_columns = ['duration', 'NVTX', 'API event']
+group_by_columns = list(set(use_columns) -
+                        set(['duration']))  # Group by all columns except duration
+agg_kernels = cudakernels[use_columns].groupby(group_by_columns, as_index=False).sum()
 print(agg_kernels)
+
+directory = os.path.dirname(args.file)
+filename = ('.').join(os.path.basename(
+    args.file).split('.')[:-1])  # Filename without extension
+filename = filename + '.csv'
+filename = os.path.join(directory, filename)
+agg_kernels.to_csv(filename, index=False)
+print('Saved to {}.'.format(filename))
