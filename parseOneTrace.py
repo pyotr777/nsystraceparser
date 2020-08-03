@@ -17,7 +17,7 @@ import numpy as np
 import re
 import sys
 
-print('Extracting data from a JSON trace file. v.0.03.')
+print('Extracting data from a JSON trace file. v.0.04.')
 
 parser = argparse.ArgumentParser(
     description='NVIDIA NSight Systems JSON trace parser. Extracts time of events.')
@@ -139,7 +139,14 @@ def NVTXforAPIevent(trace_event):
 
 # Return True if the row value contains any of event name patterns
 def searchEventPattern(row, event_names=None, debug=False):
-    s = row.loc['value']
+    s = None
+    if 'value' in row.index:
+        s = row.loc['value']
+    elif 'NvtxEvent.Text' in row.index:
+        s = row.loc['NvtxEvent.Text']
+    else:
+        print('Can search only Names and NVTX dataframes.')
+        return False
     for pattern in event_names:
         m = re.search(pattern, s, re.I)
         if m is not None:
@@ -218,15 +225,22 @@ kernels['duration'] = (kernels['CudaEvent.endNs'] - kernels['CudaEvent.startNs']
 # Names
 names = df[df['value'].notna()].dropna(axis=1, how='all')
 
-# print("Names")
-# print(names.head())
+print("Names")
+print(names.head())
 
 # Search events matching patterns
+print("Searching names ...")
 event_name_patterns = args.events
 event_names_df = names[names.apply(searchEventPattern, event_names=event_name_patterns,
                                    axis=1)]
 print('Matched Events:')
 print(event_names_df)
+
+print("Searching NVTX ...")
+nvtx_events_df = nvtx[nvtx.apply(searchEventPattern, event_names=event_name_patterns,
+                                 axis=1)].copy()
+print('Matched Events:')
+print(nvtx_events_df)
 
 if event_names_df.shape[0] == 0:
     print("Found no events matching patterns {}.".format(args.events))
@@ -236,59 +250,100 @@ df_ = traces.copy()
 API_events = df_[df_['TraceProcessEvent.name'].isin(event_names_df['id'])].dropna(
     axis=1, how='all')
 print("Found {} API events".format(API_events.shape[0]))
-if API_events.shape[0] == 0:
-    sys.exit(0)
+agg_kernels = None
+if API_events.shape[0] > 0:
+    # Store API event names
+    API_events['name'] = API_events['TraceProcessEvent.name'].apply(
+        lambda x: event_names_df[event_names_df['id'] == x]['value'].values[0])
+    # print("Columns\n{}".format(API_events.columns))
+    # display(API_events)
+    print("Unique API events:")
+    print(API_events['name'].unique())
 
-# Store API event names
-API_events['name'] = API_events['TraceProcessEvent.name'].apply(
-    lambda x: event_names_df[event_names_df['id'] == x]['value'].values[0])
-# print("Columns\n{}".format(API_events.columns))
-# display(API_events)
-print("Unique API events:")
-print(API_events['name'].unique())
+    # Search NVTX reagons encompassing API events
+    API_events['NVTX'] = API_events.apply(NVTXforAPIevent, axis=1)
 
-# Search NVTX reagons encompassing API events
-API_events['NVTX'] = API_events.apply(NVTXforAPIevent, axis=1)
+    # print("API with NVTX:")
+    # print(API_events.head(2))
 
-print("API with NVTX:")
-print(API_events.head(2))
+    # Search CUDA API calls for each API event
+    cudakernels = None
+    for _, row in API_events.iterrows():
+        start = row.loc['start']
+        end = row.loc['end']
+        APIname = row['name']
+        NVTX_arr = row['NVTX']
+        NVTX_s = ','.join(row['NVTX'])
+        df_ = lookupAPIandKernelsInTimerange(start, end, traces, kernels, names)
+        # print('{}kernels for {:} {} ({:.4f}-{:.4f})'.format(df_.shape[0], APIname, NVTX_s,
+        #                                                     start, end))
+        df_['API event'] = APIname
+        df_['NVTX_arr'] = df_.apply(lambda x: NVTX_arr, axis=1)
+        df_['NVTX'] = NVTX_s
+        df_['GPU side'] = True
 
-# Search CUDA API calls for each API event
-cudakernels = None
-for _, row in API_events.iterrows():
-    start = row.loc['start']
-    end = row.loc['end']
-    APIname = row['name']
-    NVTX_arr = row['NVTX']
-    NVTX_s = ','.join(row['NVTX'])
-    df_ = lookupAPIandKernelsInTimerange(start, end, traces, kernels, names)
-    # print('{}kernels for {:} {} ({:.4f}-{:.4f})'.format(df_.shape[0], APIname, NVTX_s,
-    #                                                     start, end))
-    df_['API event'] = APIname
-    df_['NVTX_arr'] = df_.apply(lambda x: NVTX_arr, axis=1)
-    df_['NVTX'] = NVTX_s
+        #     display(df_)
+        if cudakernels is None:
+            cudakernels = df_
+        else:
+            cudakernels = cudakernels.append(df_, ignore_index=True)
 
-    #     display(df_)
-    if cudakernels is None:
-        cudakernels = df_
-    else:
-        cudakernels = cudakernels.append(df_, ignore_index=True)
-
-cudakernels['iteration'] = cudakernels['NVTX_arr'].apply(GetIterationNumber)
+# cudakernels['iteration'] = cudakernels['NVTX_arr'].apply(GetIterationNumber)
 # If NVTX ranges do not include Iteration, 'iteration' column will have None-s.
-cudakernels.dropna(axis=1, how='all', inplace=True)
-if 'iteration' in cudakernels.columns:
-    print('Have iterations in NVTX.')
-    # print(cudakernels['iterations'])
-    use_columns = ['duration', 'NVTX', 'API event', 'iteration']
-else:
-    print('No iterations data.')
-    use_columns = ['duration', 'NVTX', 'API event']
-group_by_columns = list(set(use_columns) -
-                        set(['duration']))  # Group by all columns except duration
-agg_kernels = cudakernels[use_columns].groupby(group_by_columns, as_index=False).sum()
-print(agg_kernels)
+    cudakernels.dropna(axis=1, how='all', inplace=True)
+    # if 'iteration' in cudakernels.columns:
+    #     print('Have iterations in NVTX.')
+    #     # print(cudakernels['iterations'])
+    #     use_columns = ['duration', 'NVTX', 'API event', 'iteration']
+    # else:
+    #     print('No iterations data.')
+    #     use_columns = ['duration', 'NVTX', 'API event']
+    use_columns = ['duration', 'NVTX', 'API event', 'GPU side']
+    group_by_columns = list(set(use_columns) -
+                            set(['duration']))  # Group by all columns except duration
+    agg_kernels = cudakernels[use_columns].groupby(group_by_columns, as_index=False).sum()
 
+if nvtx_events_df.shape[0] > 0:
+    nvtx_GPUside = None
+    # print('Columns in nvtx:\n{}'.format(nvtx_events_df.columns))
+    nvtx_events_df['duration'] = nvtx_events_df['end'] - nvtx_events_df['start']
+    nvtx_events_df.rename({'NvtxEvent.Text': 'NVTX'}, axis=1, inplace=True)
+    use_columns = ['NVTX', 'duration', 'start', 'end']
+    nvtx_events_df = nvtx_events_df[use_columns]
+    nvtx_events_df['API event'] = None
+    nvtx_events_df['GPU side'] = False
+
+    # Find CUDA kernel time (start, end, duration) for each NVTX event
+    # print('NVTX events:')
+    for _, nvtx_row in nvtx_events_df.iterrows():
+        # print(nvtx_row['NVTX'], nvtx_row['start'], nvtx_row['end'])
+        start = nvtx_row['start']
+        end = nvtx_row['end']
+        cuda_kernels = lookupAPIandKernelsInTimerange(start, end, traces, kernels, names)
+        # print('CUDA Kernels')
+        # print(cuda_kernels.head())
+        cuda_start = cuda_kernels['start'].min()
+        cuda_end = cuda_kernels['end'].max()
+        duration = cuda_end - cuda_start
+        # print('CUDA times: {:.3f}-{:.3f} ({:.3f}s)'.format(cuda_start, cuda_end,
+        # duration))
+        df_cuda = pd.DataFrame(columns=['API event', 'NVTX', 'duration', 'GPU side'],
+                               data=[[None, nvtx_row['NVTX'], duration, True]])
+        if nvtx_GPUside is None:
+            nvtx_GPUside = df_cuda
+        else:
+            nvtx_GPUside = nvtx_GPUside.append(df_cuda, ignore_index=True)
+
+    use_columns = ['NVTX', 'duration', 'API event', 'GPU side']
+    nvtx_events_df = nvtx_events_df[use_columns]
+    if agg_kernels is None:
+        agg_kernels = nvtx_events_df
+    else:
+        agg_kernels = agg_kernels.append(nvtx_events_df, ignore_index=True)
+    agg_kernels = agg_kernels.append(nvtx_GPUside, ignore_index=True)
+print('-' * 24)
+print("Aggregated data")
+print(agg_kernels.sample(n=10))
 directory = os.path.dirname(args.file)
 filename = ('.').join(os.path.basename(
     args.file).split('.')[:-1])  # Filename without extension
