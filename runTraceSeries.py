@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Trace Series with a variable parameter. v0.02.')
+print('Running Trace Series with a variable parameter. v0.03.')
 
 parser = argparse.ArgumentParser(
     description=
@@ -32,7 +32,7 @@ args = parser.parse_args()
 
 # Change command
 # Use $p placeholder for the varying parameter
-command_template = 'python3 ../mlbenchmarks/pytorch/examples/imagenet/imagenet.py --dataset-size 50000'\
+command_template = 'python3 ../mlbenchmarks/pytorch/examples/imagenet/imagenet.py'\
 ' --arch resnet50 -e 1 --iter {} -b $p --workers 3 --nvtx --imnet /host/Imagenet/images/'.format(
     args.iter)
 print('Command to execute:')
