@@ -12,10 +12,15 @@
 # 7. Store two rows: for the NVTX event on CPU side, and for corresponding CUDA kernels on GPU side.
 
 # Columns in the returned (stored in a CSV file) dataframe:
-# NVTX - nvtx ranges encompassing event
-# duration
-# event - name of the event (API call, NVTX range)
-# GPU side - true if the event runs on GPU.
+# 'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side'
+# name - name of API call, CUDA kernel or NVTX range matching patterns from --event option,
+# start,end - start and end time in seconds,
+# duration in seconds,
+# NVTX - nvtx ranges encompassing event,
+# corrID - correlation ID (links CUDA API calls and CUDA kernels),
+# GPU side - true if the event runs on GPU side.
+
+# (C) 2021 Peter Bryzgalov @ Stair Laboratory, Chiba Institute of Technology, Japan
 
 import os
 import argparse
@@ -26,10 +31,11 @@ import numpy as np
 import re
 import sys
 from multigpuexec import message
+import datetime
 import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
-ver = '0.14i'
+ver = '0.16f'
 
 print('Extracting data from a JSON trace file. v.{}'.format(ver))
 
@@ -52,6 +58,8 @@ args = parser.parse_args()
 debug = args.debug
 event_name_patterns = args.events
 extradebug = False
+if debug:
+    print(datetime.datetime.now())
 
 
 # Get all rows from DF with the given correlation ID.
@@ -63,21 +71,13 @@ def LookupCorrelationID(corrId, df):  # nvtx, cuda, kernels, sync):
     df_ = df[df[corrid_columns].eq(corrId).any(1)].copy().dropna(axis=1,
                                                                  how='all')
     return df_
-    # dfcorr = None
-    # for c in corrid_columns:
-    #     df_ = df[df[c] == corrId]
-    #     if dfcorr is None:
-    #         dfcorr = df_
-    #     else:
-    #         dfcorr = dfcorr.append(df_)
-    # return dfcorr.dropna(axis=1, how='all')
 
 
 # Search all trace events (CPU side CUDA API) and corresponding CUDA kernels (GPU side)
 # matching name patterns.
 # No cuDNN or cuBLAS API events should be found here (they do not have correlation IDs).
 # Return DF with columns 'start', 'end', 'duration', 'name', 'NVTX', 'GPU side'
-def SearchCUDAAPIAndKernels(patterns,
+def SearchCUDAKernelsAndAPI(patterns,
                             names,
                             kernels,
                             traces,
@@ -108,14 +108,14 @@ def SearchCUDAAPIAndKernels(patterns,
             return None
     ids = event_names_df['id'].values
     matched_traces = pd.DataFrame()
-    # Search CUDA kernels by ids (from name patterns)
+    # Search CUDA kernels by shortName field (ids correspond to kernel names)
     matched_kernels = kernels[kernels['CudaEvent.kernel.shortName'].isin(
         ids)].dropna(axis=1, how="all").copy()
     if debug:
-        print("Found {} events matching patterns '{}'.".format(
+        print("Found {} events matching name patterns '{}'.".format(
             event_names_df.shape[0], ','.join(patterns)))
         print(event_names_df)
-        print("Found {} CUDA kernels for these events.".format(
+        print("Found {} CUDA kernels matching events by names.".format(
             matched_kernels.shape[0]))
     if matched_kernels.shape[0] > 0:
         # Found some matching CUDA kernels
@@ -228,7 +228,7 @@ def lookupTimeRange(start, end, df):
 
 
 # Combine trace evenets within time range and cuda kernels lookup
-# final_columns =  'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side'
+# final_columns =  'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side', 'Type'
 def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
                                    final_columns):
     # Lookup traces (API) events in the given range
@@ -240,17 +240,26 @@ def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
         print("No events found for time range {}-{}.".format(start, end))
         return None
 
+    # This always evals to cudaLaunchKernel_v7000 for some type of kernels:
     rangedf.loc[:, 'name'] = rangedf['TraceProcessEvent.name'].apply(
         lambda s: names[names['id'] == s]['value'].values[0])
+    # However, just in case no CUDA kernels found, for now use this dummy name anyway.
+    # If kernels found, than use correlating CUDA kernel name.
     rangedf.loc[:, 'GPU side'] = False
     rangedf.loc[:, 'NVTX'] = 'TBD'  # Set later outside of the function
     rangedf.rename(columns={'TraceProcessEvent.correlationId': 'corrID'},
                    inplace=True)
     if debug:
-        print("In time range {}-{} found {} trace events.".format(
-            start, end, rangedf.shape[0]))
+        print(
+            "lookupAPIandKernelsInTimerange: In time range {}-{} found {} trace events."
+            .format(start, end, rangedf.shape[0]))
         print(rangedf.dropna(axis=1, how="all").head())
-        print(rangedf.columns)
+        noname = rangedf[rangedf['name'].isna()]
+        if noname.shape[0] > 0:
+            print("{} no name trace events in lookupAPIandKernelsInTimerange.".
+                  format(noname.shape[0]))
+            print(noname)
+        # print("Columns: {}".format(",".join(rangedf.columns)))
 
     # Store results in the DF
     results = rangedf[final_columns].copy()
@@ -258,13 +267,44 @@ def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
     kernel_events = kernels[kernels['CudaEvent.correlationId'].isin(
         results['corrID'].unique())].copy()
     if kernel_events.shape[0] == 0:
-        print("Found no corresponding CUDA kernels")
+        print("Found no CUDA kernels for corrIDs: {}".format(",".join(
+            results['corrID'].unique())))
     else:
         kernel_events.rename(columns={'CudaEvent.correlationId': 'corrID'},
                              inplace=True)
-        kernel_events.loc[:, 'name'] = kernel_events[
-            'CudaEvent.kernel.shortName'].apply(
-                lambda s: names[names['id'] == s]['value'].values[0])
+        if kernel_events.loc[kernel_events['CudaEvent.kernel.shortName'].notna(
+        )].shape[0] > 0:
+            kernel_events['CudaEvent.kernel.shortName'] = kernel_events[
+                'CudaEvent.kernel.shortName'].fillna(-1).astype(int).replace(
+                    -1, np.nan)
+            try:
+                kernel_events.loc[
+                    kernel_events['CudaEvent.kernel.shortName'].notna(),
+                    'name'] = kernel_events[
+                        kernel_events['CudaEvent.kernel.shortName'].notna(
+                        )]['CudaEvent.kernel.shortName'].apply(lambda s: names[
+                            names['id'] == s]['value'].values[0])
+            except IndexError as e:
+                print("Error in lookupAPIandKernelsInTimerange")
+                print(e)
+                print("Test names DF")
+                rows = kernel_events[kernel_events[
+                    'CudaEvent.kernel.shortName'].notna()].shape[0]
+                print("Have {} valid rows".format(rows))
+                if rows > 0:
+                    for i, s in kernel_events[kernel_events[
+                            'CudaEvent.kernel.shortName'].notna()].iterrows():
+                        name = int(s.loc['CudaEvent.kernel.shortName'])
+                        test_name_values = names[names['id'] == name]['value']
+                        if len(test_name_values) == 0:
+                            print("no names for event\n v v v v")
+                            pp.pprint(s)
+                            print(" ^ ^ ^ ^")
+
+                else:
+                    print(kernel_events)
+                sys.exit(1)
+
         kernel_events.loc[:, 'GPU side'] = True
         kernel_events.loc[:,
                           'NVTX'] = 'TBD'  # Set later outside of the function
@@ -272,7 +312,70 @@ def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
             print("Found {} CUDA kernels:".format(kernel_events.shape[0]))
             print(kernel_events.dropna(axis=1, how="all").head())
 
+        # Make a merged table with names and corrIDs only
+        try:
+            k_ = kernel_events.loc[kernel_events['corrID'] != 0.,
+                                   ['corrID', 'name']]
+            m_ = pd.merge(results[['corrID', 'name']],
+                          k_,
+                          on=['corrID'],
+                          suffixes=["", "_kernel"]).fillna('')
+
+            # import pdb
+            # pdb.set_trace()
+            if debug:
+                print("Merged tables with names:")
+                pp.pprint(m_)
+        except Exception as e:
+            print(e)
+            sys.exit(1)
+
+        # Set missing event names:
+        # for API events use kernel names,
+        # for kernel events use API event names.
+        try:
+
+            def setMissingNames(s, namedf):
+                badnames = ['', 'cudaLaunchKernel_v7000'
+                            ]  # These are the names to be replaced
+                corrid = s.loc['corrID']
+                name = s.loc['name']
+                # Check in badnames
+                if name in badnames:
+                    availnames = list(
+                        namedf.loc[namedf['corrID'] == corrid,
+                                   ['name', 'name_kernel']].values.flatten())
+                    goodnames = list(set(availnames) - set(badnames))
+                    return goodnames[0]
+                else:
+                    return s.loc['name']
+
+            results.loc[results['corrID'] != 0, 'name'] = results[
+                results['corrID'] != 0].fillna('').apply(setMissingNames,
+                                                         namedf=m_,
+                                                         axis=1)
+            kernel_events.loc[kernel_events['corrID'] != 0,
+                              'name'] = kernel_events[kernel_events['corrID']
+                                                      != 0].fillna('').apply(
+                                                          setMissingNames,
+                                                          namedf=m_,
+                                                          axis=1)
+            if debug:
+                print("Testing names")
+                # Test bad names
+                badnames = ['', 'cudaLaunchKernel_v7000']
+                badnamesresults = results[results['name'].fillna('').isin(
+                    badnames)]
+                if badnamesresults.shape[0] > 0:
+                    print("No good names found for:")
+                    print(badnamesresults)
+
+        except Exception as e:
+            print("Cannot set names in lookupAPIandKernelsInTimerange")
+            print(e)
+
         results = results.append(kernel_events[final_columns])
+
     return results
 
 
@@ -371,7 +474,8 @@ if 'NvtxEvent.Timestamp' in df.columns:
     nvtx['start'] = nvtx['NvtxEvent.Timestamp'] * 10e-10
     nvtx['end'] = nvtx['NvtxEvent.EndTimestamp'].fillna(0) * 10e-10
     nvtx['end'] = nvtx['end'].replace(0, np.nan)
-    print('NVTX: {}'.format(nvtx['NvtxEvent.Text'].unique()))
+    if debug:
+        print('NVTX: {}'.format(nvtx['NvtxEvent.Text'].unique()))
 else:
     nvtx = None
 
@@ -397,8 +501,7 @@ if debug:
     print("Sync DF has {} rows.".format(sync.shape[0]))
 
 # CUDA event kernels objects
-kernels = df[df['CudaEvent.kernel.shortName'].notna()].dropna(axis=1,
-                                                              how='all')
+kernels = df[df['CudaEvent.correlationId'].notna()].dropna(axis=1, how='all')
 # Convert to seconds
 kernels['start'] = kernels['CudaEvent.startNs'] * 10e-10
 kernels['end'] = kernels['CudaEvent.endNs'] * 10e-10
@@ -417,13 +520,13 @@ if debug:
 
 # Store info about all found events in this DF
 final_columns = [
-    'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side'
+    'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side', 'Type'
 ]
 events = pd.DataFrame(columns=final_columns)
 
 # SEARCH
 # Search CUDA kernels and API events matching patterns
-matched_kernels_traces = SearchCUDAAPIAndKernels(event_name_patterns,
+matched_kernels_traces = SearchCUDAKernelsAndAPI(event_name_patterns,
                                                  names,
                                                  kernels,
                                                  traces,
@@ -446,15 +549,14 @@ else:
         event_name_patterns))
 
 # Search events matching patterns
-# print("Searching names ...")
 event_names_df = names[names.apply(searchEventPattern,
                                    event_names=event_name_patterns,
                                    axis=1)]
 df_ = traces.copy()
-if args.debug:
-    print("Searching cuDNN, cuBLAS API events in traces...")
+print("Searching cuDNN, cuBLAS, ... API calls in traces...")
 API_events = df_[df_['TraceProcessEvent.name'].isin(
-    event_names_df['id'])].dropna(axis=1, how='all').copy()
+    event_names_df['id'])].dropna(axis=1,
+                                  how='all').reset_index(drop=True).copy()
 
 if API_events.shape[0] == 0:
     print("Found no API events matching patterns {}.".format(
@@ -463,7 +565,6 @@ if API_events.shape[0] == 0:
 if API_events.shape[0] > 0:
     print("Found {} API events".format(API_events.shape[0]))
     if debug:
-        print(API_events.head())
         # Check type of fount events, should be 48
         print("\tFound API event types (should be all 48.): {}".format(
             API_events['Type'].unique()))
@@ -473,8 +574,10 @@ if API_events.shape[0] > 0:
         lambda x: event_names_df[event_names_df['id'] == x]['value'].values[0])
     # print("Columns\n{}".format(API_events.columns))
     # display(API_events)
-    print("Unique API events: {}".format(','.join(
-        API_events['name'].unique())))
+    if debug:
+        print(API_events.head())
+        print("Unique API events: {}".format(','.join(
+            API_events['name'].unique())))
 
     # Search NVTX regions encompassing API events
     API_events.loc[:, 'NVTX'] = API_events.apply(NVTXforAPIevent,
@@ -484,7 +587,11 @@ if API_events.shape[0] > 0:
     # Search CUDA kernels for each API event
     # API events have 3 or more entries:
     # cuDNN/cuBLAS API call, CUDA kernel call(s), CUDA kernel execution(s).
-    for _, row in API_events.iterrows():
+    N = API_events.shape[0]
+    for i, row in API_events.iterrows():
+        if debug:
+            print("{}/{} {}".format(
+                i + 1, N, ", ".join([str(s) for s in row.loc['start':]])))
         start = row.loc['start']
         end = row.loc['end']
         duration = end - start
@@ -505,32 +612,33 @@ if API_events.shape[0] > 0:
         # store CUDA kernels duration
         df_ = lookupAPIandKernelsInTimerange(start, end, traces, kernels,
                                              names, final_columns)
-        # Execution time of all kernels from the first to the last
         if df_.shape[0] > 0:
+            # Set NVTX
+            df_['NVTX'] = NVTX_s
+            # Set name for CUDA kernels without names (like memory copy)
+            df_.loc[df_['name'].isna(), 'name'] = APIname
             if debug:
-                print('{} kernels for {:} nvtx:{} ({:.5f}-{:.5f})'.format(
-                    df_.shape[0], APIname, NVTX_s, df_['start'].min(),
-                    df_['end'].max()))
-                print(df_.head())
-            duration = df_['end'].max() - df_['start'].min()
-            # print('CUDA kernels found by time range')
-            for _, event in df_.iterrows():
-                # CPU-side event
-                events.loc[events.shape[0]] = [
-                    event['kernel'], event['api_start'], event['api_end'],
-                    event['api_end'] - event['api_start'], NVTX_s,
-                    event['correlationId'], False
-                ]
-                # GPU-side event
-                events.loc[events.shape[0]] = [
-                    event['kernel'], event['start'], event['end'],
-                    event['duration'], NVTX_s, event['correlationId'], True
-                ]
+                print('{} events for {} nvtx:{} ({:f}-{:f})'.format(
+                    df_.shape[0], APIname, NVTX_s, start, end))
+                print(df_)
+            events = events.append([df_[final_columns]], ignore_index=True)
+
+            # for _, event in df_.iterrows():
+            #     # CPU-side event
+            #     events.loc[events.shape[0]] = [
+            #         event['kernel'], event['api_start'], event['api_end'],
+            #         event['api_end'] - event['api_start'], NVTX_s,
+            #         event['correlationId'], False
+            #     ]
+            #     # GPU-side event
+            #     events.loc[events.shape[0]] = [
+            #         event['kernel'], event['start'], event['end'],
+            #         event['duration'], NVTX_s, event['correlationId'], True
+            #     ]
 
 # NVTX events
 if nvtx is not None:
-    if args.debug:
-        print("Searching NVTX ...")
+    print("Searching NVTX ...")
     nvtx_events_df = nvtx[nvtx.apply(searchEventPattern,
                                      event_names=event_name_patterns,
                                      debug=extradebug,
@@ -547,32 +655,34 @@ if nvtx is not None:
             N = nvtx_events_df.shape[0]
             print("Parsing {} NVTX events".format(N))
             for i, nvtx_event in nvtx_events_df.iterrows():
-                print("{}/{}".format(i, N))
+                if debug:
+                    print("{}/{}".format(i + 1, N))
                 # Find encompassing NVTX ranges
                 # import pdb
                 # pdb.set_trace()
+                start = nvtx_event['start']
+                end = nvtx_event['end']
                 nvtxranges = nvtx[nvtx['end'].notna()].copy()
-                nvtxranges = nvtxranges[
-                    nvtxranges['start'] <= nvtx_event['start']]
-                nvtxranges = nvtxranges[nvtxranges['end'] > nvtx_event['end']]
+                nvtxranges = nvtxranges[nvtxranges['start'] <= start]
+                nvtxranges = nvtxranges[nvtxranges['end'] > end]
                 nvtx_names = ''
                 if nvtxranges.shape[0] > 0:
                     nvtx_names = ','.join(nvtxranges['NvtxEvent.Text'].values)
                     if debug:
                         print('Encompassing NVTX ranges: "{}"'.format(
                             nvtx_names))
-                duration = nvtx_event['end'] - nvtx_event['start']
+                # duration = nvtx_event['end'] - nvtx_event['start']
 
-                # Add NVTX event to events DF
+                # Do not Add NVTX event to events DF because it will be difficult to filter it out
+                # to find CPU-time of API events.
                 # final_columns =  'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side'
-                events.loc[events.shape[0]] = [
-                    nvtx_event['NvtxEvent.Text'], nvtx_event['start'],
-                    nvtx_event['end'], duration, nvtx_names, np.nan, False
-                ]
+                # events.loc[events.shape[0]] = [
+                #     nvtx_event['NvtxEvent.Text'], nvtx_event['start'],
+                #     nvtx_event['end'], duration, nvtx_names, np.nan, False
+                # ]
 
                 # Find CUDA kernel time (start, end, duration) for each NVTX event
-                start = nvtx_event['start']
-                end = nvtx_event['end']
+
                 events_in_nvtx = lookupAPIandKernelsInTimerange(
                     start, end, traces, kernels, names, final_columns)
                 nvtx_ = nvtx_event['NvtxEvent.Text']
@@ -583,17 +693,31 @@ if nvtx is not None:
                 if debug:
                     print('CUDA Kernels for NVTX range "{}":'.format(
                         nvtx_event['NvtxEvent.Text']))
-                    print(events_in_nvtx.head())
+                    pp.pprint(events_in_nvtx.head())
+                    # Check no name kernels
+                    noname = events_in_nvtx.loc[events_in_nvtx['name'].isna(),
+                                                ['name', 'NVTX', 'corrID']]
+                    if noname.shape[0] > 0:
+                        print("Events without name:")
+                        pp.pprint(noname)
+                        noname_corrids = noname['corrID'].unique()
+                        df_ = events_in_nvtx[events_in_nvtx['corrID'].isin(
+                            noname_corrids)].sort_values('corrID',
+                                                         ignore_index=True)
+                        print("Grouped by corrID")
+                        pp.pprint(df_)
 
                 events = events.append(events_in_nvtx, ignore_index=True)
+
     except NameError:
         print()
         print('No NVTX events in the trace.')
 
 if events.shape[0] > 0:
+    events.sort_values(by=['start', 'corrID'], inplace=True, ignore_index=True)
     print()
     print('Event DF head')
-    print(events.head(1))
+    pp.pprint(events.sort_values(['corrID'], ignore_index=True).head())
     print('{}  rows'.format(events.shape[0]))
     print('-' * 50)
     directory = os.path.dirname(args.file)
