@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Trace Series with a variable parameter. v0.04e.')
+print('Running Trace Series with a variable parameter. v0.05a.')
 
 parser = argparse.ArgumentParser(
     description=
@@ -95,7 +95,7 @@ for parameter in parameters:
     filename = args.output.replace('$p', str(parameter))
     # Tracing command
     report_file = os.path.join(logdir, filename)
-    trace_command = 'nsys profile -s cpu -t cuda,cudnn,nvtx,cublas -o {}'.format(
+    trace_command = 'nsys profile -t cuda,cudnn,nvtx,cublas -o {}'.format(
         report_file)
 
     logfilename = 'stdout_{}.log'.format(parameter)
