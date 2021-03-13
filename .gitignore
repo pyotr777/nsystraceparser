@@ -2,5 +2,6 @@
 !.gitignore
 **/*cache*
 **/*logs*
-*.ipnb
+*.ipynb
 *.pyc
+*.deb
