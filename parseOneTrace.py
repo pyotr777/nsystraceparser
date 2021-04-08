@@ -35,7 +35,7 @@ import datetime
 import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
-ver = '0.16f'
+ver = '0.16g'
 
 print('Extracting data from a JSON trace file. v.{}'.format(ver))
 
@@ -304,7 +304,10 @@ def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
                 else:
                     print(kernel_events)
                 sys.exit(1)
-
+        else:
+            # CudaEvent.kernel.shortName is None for all GPU-side kernels
+            # Create an empty column "name", it's used in merging with results later.
+            kernel_events.loc[:, 'name'] = None
         kernel_events.loc[:, 'GPU side'] = True
         kernel_events.loc[:,
                           'NVTX'] = 'TBD'  # Set later outside of the function
@@ -321,13 +324,14 @@ def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names,
                           on=['corrID'],
                           suffixes=["", "_kernel"]).fillna('')
 
-            # import pdb
-            # pdb.set_trace()
             if debug:
                 print("Merged tables with names:")
-                pp.pprint(m_)
+                pp.pprint(m_.head())
         except Exception as e:
             print(e)
+            if debug:
+                import pdb
+                pdb.set_trace()
             sys.exit(1)
 
         # Set missing event names:
