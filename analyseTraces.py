@@ -15,6 +15,7 @@ import string
 import matplotlib
 from matplotlib import pyplot as plt
 from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import AutoMinorLocator
 from matplotlib import cm
 import seaborn as sns
 import numpy as np
@@ -23,8 +24,10 @@ import itertools
 from lib import plotter
 import yaml
 import argparse
+from scipy import stats
+from sklearn import linear_model
 
-version = "1.04f"
+version = "1.05g"
 print("Analyser of series of nsys traces. v.{}.".format(version))
 # Default parameters
 
@@ -98,27 +101,6 @@ def parseIteration(s):
     return int(s.strip(string.ascii_letters).strip(' ,'))
 
 
-# Calculate gaps for each iteration
-def calculateGaps(df, batch='param', iteration='iteration'):
-    callsandgaps = None
-    df_ = df.copy()
-    if 'prev' in df_.columns:
-        df_.drop('prev', axis=1, inplace=True)
-    if 'gap' in df_.columns:
-        df_.drop('gap', axis=1, inplace=True)
-    for mbs, mbsdf in df_.groupby(batch, sort=True):
-        for it, iterdf in mbsdf.groupby(iteration, sort=False):
-            iterdf = iterdf.sort_values(['start']).reset_index(drop=True)
-            iterdf.loc[:, 'prev'] = iterdf['end'].shift(1)
-            iterdf.loc[:, 'gap'] = iterdf['start'] - iterdf['prev']
-            if callsandgaps is None:
-                callsandgaps = iterdf
-            else:
-                callsandgaps = pd.concat([callsandgaps, iterdf],
-                                         ignore_index=True)
-    return callsandgaps
-
-
 # Return DF with events (names) from the list of async event
 def selectEventsByName(df, names):
     asyncEventsdf = None
@@ -137,7 +119,7 @@ def getCleanCPUTime(df):
     cuda_names = [
         'cudaMemcpy', 'cudaStream', 'cudaEvent', 'cudaMemset',
         'cudaBindTexture', 'cudaUnbindTexture', 'cudaEventCreateWithFlags',
-        'cudaHostAlloc', 'cudaMalloc', 'CUPTI'
+        'cudaHostAlloc', 'cudaMalloc', 'CUPTI', 'cudaFree'
     ]
     clean_cpu = df[(df['GPU side'] == False) & (df['corrID'] > 0)].copy()
     cuda_events = selectEventsByName(clean_cpu, cuda_names)
@@ -145,377 +127,6 @@ def getCleanCPUTime(df):
     return clean_cpu
 
 
-# Create target dir
-if not os.path.exists(targetdir):
-    os.makedirs(targetdir)
-print("Target dir", targetdir)
-
-# Read trace files
-list_command = "ls -1 " + logdir
-files = []
-param_values = []
-proc = subprocess.Popen(list_command.split(" "),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        encoding='utf8')
-for line in iter(proc.stdout.readline, ''):
-    line = line.strip(" \n")
-    m = re.match(trace_name_pattern, line)
-    if m:
-        files.append(os.path.abspath(os.path.join(logdir, line)))
-        param_values.append(m.group(1))
-
-print('{} files in {}'.format(len(files), logdir))
-
-results = None
-for param, tracefile in zip(param_values, files):
-    events = ' '.join(event_patterns)
-    if convert_traces:
-        # Run
-        # python3 parseOneTrace.py -f $tracefile --events $events
-        command = 'python3 parseOneTrace.py -f {} --events {}'.format(
-            tracefile, events)
-        print(command)
-        p = subprocess.run(command.split(' '),
-                           stdin=subprocess.PIPE,
-                           stderr=subprocess.PIPE,
-                           bufsize=0,
-                           shell=False)
-        if p.returncode == 0:
-            print('Finished OK')
-        else:
-            print(p.stdout.decode('utf-8'))
-            print('ERROR')
-            print(p.stderr.decode('utf-8'))
-    # Read data from CSV file
-    directory = os.path.dirname(tracefile)
-    csvfile = ('').join(os.path.basename(tracefile).split('.')
-                        [:-1])  # Filename without extension
-    csvfile = csvfile + '.csv'
-    csvfile = os.path.join(directory, csvfile)
-    print('Reading {}'.format(csvfile))
-    df_ = pd.read_csv(csvfile)
-    df_['param'] = param
-    if results is None:
-        results = df_
-    else:
-        results = results.append(df_, ignore_index=True)
-
-results[['start', 'end', 'duration']] = results[['start', 'end',
-                                                 'duration']].astype(float)
-results[['param']] = results[['param']].astype(int)
-
-# 2.2 Parse iteration numbers
-longtimes = results.copy()
-
-# PArse Iteration numbers
-longtimes['NVTX'] = longtimes['NVTX'].fillna('')
-longtimes.loc[:, 'iteration'] = longtimes["NVTX"].apply(parseIteration)
-longtimes.drop(['NVTX'], axis=1, inplace=True)
-longtimes[['param', 'corrID', 'Type']] = longtimes[['param', 'corrID',
-                                                    'Type']].astype(int)
-iterations = list(longtimes['iteration'].unique())
-longtimes = longtimes[longtimes['iteration'].isin(iterations[2:-2])]
-print("Iterations:", sorted(longtimes['iteration'].unique()))
-print("mbs:", sorted(longtimes['param'].unique()))
-
-callsandgaps = None
-if args.nooverlaps:
-    # 2.3 Gap times
-    # Aggregate duration and gaps per mbs and per iteration
-    df_ = longtimes[(longtimes['GPU side'] == False)
-                    & (longtimes['corrID'] != 0)].copy()
-    # # No memory operations
-    # df_ = filterMemoryOps(df_)
-    # cputime = pd.DataFrame(columns=[
-    #     'batch', 'iteration', 'mean call time', 'mean gap time',
-    #     'median call time', 'median gap time', 'sum calls', 'sum gaps', 'calls'
-    # ],
-    #                        dtype=float)
-    print("Calculating gap times for CPU-side events...")
-    print("MBS ", end="")
-    for mbs, mbsdf in df_.groupby('param', sort=True):
-        print("{} ".format(mbs), end="")
-        for iteration, iterdf in mbsdf.groupby('iteration', sort=False):
-            iterdf = iterdf.sort_values(['start']).reset_index(drop=True)
-            iterdf.loc[:, 'prev'] = iterdf['end'].shift(1)
-            iterdf.loc[:, 'gap'] = iterdf['start'] - iterdf['prev']
-            if callsandgaps is None:
-                callsandgaps = iterdf
-            else:
-                callsandgaps = pd.concat([callsandgaps, iterdf],
-                                         ignore_index=True)
-            # meancall = iterdf['duration'].mean()
-            # meangap = iterdf['gap'].mean()
-            # mediancall = iterdf['duration'].median()
-            # mediangap = iterdf['gap'].median()
-            # sumcalls = iterdf['duration'].sum()
-            # sumgaps = iterdf['gap'].sum()
-            # calls = iterdf.shape[0]
-            # cputime.loc[cputime.shape[0], :] = [
-            #     mbs, iteration, meancall, meangap, mediancall, mediangap, sumcalls,
-            #     sumgaps, calls
-            # ]
-
-    print("done")
-    callsandgaps.drop(["GPU side", "Type"], axis=1, inplace=True)
-    # cputime[['batch', 'iteration',
-    # 'calls']] = cputime[['batch', 'iteration', 'calls']].astype(int)
-
-    # Calculate no overlaps time
-    # 2.5 Remove overlapping events with names from the list
-
-    print("Removing overlaps in CPU events...")
-    csv_file = "nooverlap.csv"
-    csv_file = os.path.join(logdir, csv_file)
-
-    if not os.path.isfile(csv_file):
-        df_ = callsandgaps.copy()
-        async_names = [
-            'cudaEventQuery', 'cudaMemsetAsync', 'cudaEventDestroy',
-            'cudaEventRecord', 'cudaBindTexture', 'cudaUnbindTexture',
-            'cudaEventCreateWithFlags', 'cudaHostAlloc'
-        ]
-
-        while df_[(df_['gap'] < 0)].shape[0] > 0:
-            overlapping = (df_[(df_['gap'] < 0)].shape[0])
-            total = df_.shape[0]
-            print("Overlaps: {}/{}".format(overlapping, total))
-            overlapping_events = df_[(df_['gap'].shift(-1) < 0) |
-                                     (df_['gap'] < 0)].copy()
-            print("Names of overlapping events:\n",
-                  overlapping_events['name'].unique())
-            overlapping_events = selectEventsByName(overlapping_events,
-                                                    async_names)
-            print("Filtered overlapping events:",
-                  overlapping_events['name'].unique())
-            df_ = df_[~df_.index.isin(overlapping_events.index)]
-            df_ = calculateGaps(df_)
-
-        nooverlapdf = df_.copy()
-        # Save nooverlapdf
-        nooverlapdf.to_csv(csv_file, index=False)
-        print("Saved {}".format(csv_file))
-    else:
-        nooverlapdf = pd.read_csv(csv_file)
-
-    print("Nooverlapdf")
-    print(nooverlapdf.head())
-
-    # Start and end of each iteration
-    # Gaps between iterations
-    # Get start iteration time
-    df_iter = nooverlapdf.copy()
-    df_iter_g = df_iter.groupby(['param', 'iteration']).agg({
-        'start': 'min',
-        'end': 'max'
-    })
-    df_iter_g = df_iter_g.reset_index(drop=False).rename(
-        {
-            'start': 'iter_start',
-            'end': 'iter_end'
-        }, axis=1)
-    df_iter_g.loc[:, 'prev'] = df_iter_g.shift(1)['iter_end']
-    df_iter_g.loc[:, 'iter_gap'] = df_iter_g['iter_start'] - df_iter_g['prev']
-    df_iter_g = df_iter_g[df_iter_g['iter_gap'] >= 0]
-
-    meanitergaps = df_iter_g.groupby(['param']).agg({'iter_gap': 'mean'})
-
-    fig, ax = plt.subplots(figsize=(9, 4), dpi=140)
-    df_iter_g.plot.scatter(x="param", y="iter_gap", alpha=0.7, ax=ax)
-    ax.set_title("Gaps between iterations\n{}".format(logdir))
-    ax.set_ylabel("gaps (s)")
-    ax.grid(ls=':', lw=0.7)
-    ax.grid(ls=':', lw=0.3, which='minor')
-    meanitergaps.plot(ax=ax)
-    figfile = "gapsBetweenIterations.pdf"
-    figfile = os.path.join(targetdir, figfile)
-    plt.savefig(figfile, bbox_inches="tight")
-    print("Saved", figfile)
-
-# Time of CPU calls to compute kernels
-# Remove all cuda... not calculation events
-clean_cpu = getCleanCPUTime(longtimes)
-
-# Execution time of kernels with corrIDs in clean_gpu on GPU side
-corrIDs = clean_cpu['corrID'].unique()
-clean_gpu = longtimes[(longtimes['GPU side'] == True)
-                      & (longtimes['corrID'].isin(corrIDs))]
-clean_gpu = clean_gpu.groupby(['param', 'iteration'],
-                              as_index=False).agg('sum').rename(
-                                  {'param': 'batch'}, axis=1)
-clean_gpu = clean_gpu.groupby(['batch'], as_index=True).agg('median')
-clean_gpu.drop(['start', 'iteration', 'end', 'corrID', 'GPU side', 'Type'],
-               axis=1,
-               inplace=True)
-print("Clean GPU\n", clean_gpu.head())
-
-# CPU-GPU syncro time
-event = "cudaMemcpyAsync"
-syncevents = selectEventsByName(longtimes[longtimes['GPU side'] == False],
-                                [event])
-
-df_ = syncevents.copy()
-ignorecolumns = [
-    c for c in ['start', 'end', 'corrID', 'prev', 'gap'] if c in df_.columns
-]
-df_ = df_.drop(ignorecolumns, axis=1)
-df_ = df_.groupby(['param', 'name',
-                   'iteration']).agg('sum').reset_index(drop=False)
-
-df_ = df_.groupby(['param', 'name']).agg('median').reset_index(drop=False)
-cpucudaMemcpy = df_.copy()
-df_['duration'] = df_['duration'] * 1000.
-df_ = df_.pivot(index="name", columns=['param'], values=['duration']).fillna(0)
-df_.columns = df_.columns.get_level_values(1)
-
-fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
-# col1 = plotter.getColorList('viridis', n=10)
-# col2 = plotter.getColorList('tab10', n=10)
-# # col3 = getColorList('tab20c',n=20)
-# colors = col2 + col1
-# N = len(colors)
-# cmap = matplotlib.colors.LinearSegmentedColormap.from_list("combined",
-#                                                            colors,
-#                                                            N=N)
-
-df_.T.plot(marker='o', ms=4, mfc='w', ax=ax)
-ax.set_xlim(0, None)
-ax.xaxis.set_major_locator(MultipleLocator(10))
-ax.xaxis.set_minor_locator(MultipleLocator(5))
-ax.yaxis.set_major_locator(MultipleLocator(10))
-ax.yaxis.set_minor_locator(MultipleLocator(5))
-ax.grid(ls=':', lw=0.7)
-ax.grid(ls=':', lw=0.3, which='minor')
-ax.set_ylabel("call time (ms)")
-ax.set_title("{} time per iteration for\n{}".format(event, logdir))
-# Reverse legend order
-handles, labels = ax.get_legend_handles_labels()
-# handles = handles[::-1][:limit]
-# labels = labels[::-1][:limit]
-leg = ax.legend(handles,
-                labels,
-                ncol=1,
-                loc='upper left',
-                frameon=False,
-                bbox_to_anchor=(1, 1.05))
-figfile = "CPUGPUsync_cudaMemcpyAsync.pdf"
-figfile = os.path.join(targetdir, figfile)
-plt.savefig(figfile, bbox_inches="tight")
-print("Saved", figfile)
-
-if callsandgaps is not None:
-    # Box plot for CPU events and gaps without memory ops
-    df_ = filterMemoryOps(callsandgaps).copy()
-    df_['duration'] = df_['duration'] * 1000.
-    df_['gap'] = df_['gap'] * 1000.
-    df_ = df_.rename({'param': 'batch'}, axis=1)
-    fliers = dict(markerfacecolor='tab:blue',
-                  ms=2,
-                  mec="tab:blue",
-                  alpha=0.3,
-                  marker='o')
-    axs = df_.boxplot(by='batch',
-                      column=['gap', 'duration'],
-                      figsize=(15, 8),
-                      flierprops=fliers)
-    for ax in axs:
-        ax.grid(ls=":", alpha=0.5)
-        ax.set_ylabel('time (ms)', fontsize=18)
-        for tick in ax.xaxis.get_major_ticks():
-            tick.label.set_fontsize(14)
-        for tick in ax.yaxis.get_major_ticks():
-            tick.label.set_fontsize(14)
-        ax.set_title(ax.get_title(), fontsize=20)
-    plt.suptitle("{}. Calls and gaps (NO memory operations)".format(target),
-                 fontsize=24)
-    figfile = "eventsAndGaps_noMemops.pdf"
-    figfile = os.path.join(targetdir, figfile)
-    plt.savefig(figfile, bbox_inches="tight")
-    print("Saved", figfile)
-
-if args.nooverlaps:
-    # Box plot for CPU events and gaps after removing overlapping events
-    df_ = nooverlapdf.copy()
-    df_['duration'] = df_['duration'] * 1000.
-    df_['gap'] = df_['gap'] * 1000.
-    df_ = df_.rename({'param': 'batch'}, axis=1)
-    fliers = dict(markerfacecolor='tab:blue',
-                  ms=2,
-                  mec="tab:blue",
-                  alpha=0.3,
-                  marker='o')
-    axs = df_.boxplot(by='batch',
-                      column=['gap', 'duration'],
-                      figsize=(15, 8),
-                      flierprops=fliers)
-    for ax in axs:
-        ax.grid(ls=":", lw=0.7)
-        ax.set_ylabel('time (ms)', fontsize=18)
-        for tick in ax.xaxis.get_major_ticks():
-            tick.label.set_fontsize(14)
-        for tick in ax.yaxis.get_major_ticks():
-            tick.label.set_fontsize(14)
-        ax.set_title(ax.get_title(), fontsize=20)
-    plt.suptitle("{}. Calls and gaps (NO overlapping events)".format(target),
-                 fontsize=24)
-    figfile = "eventsAndGaps_noOverlaps.pdf"
-    figfile = os.path.join(targetdir, figfile)
-    plt.savefig(figfile, bbox_inches="tight")
-    print("Saved", figfile)
-
-# No overlaps, no memory (only datacopy events)
-memoryops = selectEventsByName(
-    longtimes[(longtimes['GPU side'] == True)
-              & (longtimes['corrID'] != 0)],
-    ["cudaStreamSynchronize", "cudaMemcpyAsync"])
-
-# nomemorydf = nooverlapdf[~nooverlapdf['corrID'].isin(memoryops['corrID'].
-#                                                          unique())].copy()
-
-# # Box plot for CPU events and gaps after removing overlapping events
-# df_ = nomemorydf.copy()
-# df_['duration'] = df_['duration'] * 1000.
-# df_['gap'] = df_['gap'] * 1000.
-# df_ = df_.rename({'param': 'batch'}, axis=1)
-# fliers = dict(markerfacecolor='tab:blue',
-#               ms=2,
-#               mec="tab:blue",
-#               alpha=0.3,
-#               marker='o')
-# axs = df_.boxplot(by='batch',
-#                   column=['gap', 'duration'],
-#                   figsize=(15, 8),
-#                   flierprops=fliers)
-# for ax in axs:
-#     ax.grid(ls=":", lw=0.7)
-#     ax.set_ylabel('time (ms)', fontsize=18)
-#     for tick in ax.xaxis.get_major_ticks():
-#         tick.label.set_fontsize(14)
-#     for tick in ax.yaxis.get_major_ticks():
-#         tick.label.set_fontsize(14)
-#     ax.set_title(ax.get_title(), fontsize=20)
-# plt.suptitle(
-#     "{}. Calls and gaps (NO overlapping events no datacopy)".format(target),
-#     fontsize=24)
-# figfile = "eventsAndGaps_noOverlaps_nodatacopy.pdf"
-# figfile = os.path.join(targetdir, figfile)
-# plt.savefig(figfile, bbox_inches="tight")
-# print("Saved", figfile)
-
-# # Aggregate events
-# nomemorydf.loc[:, 'callandgap'] = nomemorydf['duration'] + nomemorydf['gap']
-# nomemorydf = nomemorydf.groupby(['param', 'name', 'iteration'
-#                                  ]).agg('sum').reset_index(drop=False)
-# nomemorydf = nomemorydf.groupby(['param', 'name']).agg('median').reset_index(
-#     drop=False).drop(['iteration', 'corrID', 'start', 'end', 'prev'], axis=1)
-
-# print(
-#     "nomemorydf (nooverlap without cudaStreamSynchronize and cudaMemcpyAsync")
-# print(nomemorydf.head())
-
-
-# Area plot of events and gaps
 # Plot stacked areaplot of kernel times etc.
 # Series name (distinguished by color) in column series.
 # title - plot title
@@ -543,7 +154,7 @@ def plotArea(df,
 
     n = df_.shape[0]
     fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
-    colors = plotter.getColorList('tab20_r', n=20)
+    colors = plotter.getColorList('tab20', n=20)
     if n > 21:
         col1 = plotter.getColorList('viridis_r', n=n - 20)
         colors = colors + col1
@@ -561,9 +172,7 @@ def plotArea(df,
     ax.xaxis.set_major_locator(MultipleLocator(10))
     ax.grid(ls=':', lw=0.7)
     ax.grid(ls=':', lw=0.3, which='minor')
-    if units != "":
-        units = "({})".format(units)
-    ax.set_ylabel("{} of {} {}".format(agg, values, units))
+    ax.set_ylabel("{} of {} ({})".format(agg, values, units))
     if title is not None:
         ax.set_title(title)
     # Reverse legend order
@@ -578,6 +187,163 @@ def plotArea(df,
                     bbox_to_anchor=(1, 1.05))
 
 
+# Create target dir
+if not os.path.exists(targetdir):
+    os.makedirs(targetdir)
+print("Target dir", targetdir)
+
+# Read trace files
+list_command = "ls -1 " + logdir
+files = []
+param_values = []
+proc = subprocess.Popen(list_command.split(" "),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        encoding='utf8')
+for line in iter(proc.stdout.readline, ''):
+    line = line.strip(" \n")
+    m = re.match(trace_name_pattern, line)
+    if m:
+        files.append(os.path.abspath(os.path.join(logdir, line)))
+        param_values.append(m.group(1))
+
+print('{} files in {}'.format(len(files), logdir))
+
+results = None
+for param, tracefile in zip(param_values, files):
+    # events = ' '.join(event_patterns)
+    # Read data from CSV file
+    directory = os.path.dirname(tracefile)
+    csvfile = ('').join(os.path.basename(tracefile).split('.')
+                        [:-1])  # Filename without extension
+    csvfile = csvfile + '.csv'
+    csvfile = os.path.join(directory, csvfile)
+    if convert_traces or not os.path.exists(csvfile):
+        print("Parcing", tracefile)
+        # Run
+        # python3 parseOneTrace.py -f $tracefile --events $events
+        command = ['python3', 'parseOneTrace.py', '-f', tracefile, '--events'
+                   ] + event_patterns
+        print(command)
+        p = subprocess.run(command,
+                           stdin=subprocess.PIPE,
+                           stderr=subprocess.PIPE,
+                           bufsize=0,
+                           shell=False)
+        if p.returncode == 0:
+            print('Finished OK')
+        else:
+            print(p.stdout.decode('utf-8'))
+            print('ERROR')
+            print(p.stderr.decode('utf-8'))
+
+    print('Reading {}'.format(csvfile))
+    df_ = pd.read_csv(csvfile)
+    df_['param'] = param
+    if results is None:
+        results = df_
+    else:
+        results = results.append(df_, ignore_index=True)
+
+results[['start', 'end', 'duration']] = results[['start', 'end',
+                                                 'duration']].astype(float)
+results[['param']] = results[['param']].astype(int)
+
+# 2.2 Parse iteration numbers
+longtimes = results.copy()
+
+# PArse Iteration numbers
+longtimes['NVTX'] = longtimes['NVTX'].fillna('')
+longtimes.loc[:, 'iteration'] = longtimes["NVTX"].apply(parseIteration)
+longtimes.drop(['NVTX'], axis=1, inplace=True)
+longtimes[['param', 'corrID', 'Type']] = longtimes[['param', 'corrID',
+                                                    'Type']].astype(int)
+iterations = list(longtimes['iteration'].unique())
+longtimes = longtimes[longtimes['iteration'].isin(iterations[2:-2])]
+print("Iterations: {}-{}".format(longtimes['iteration'].min(),
+                                 longtimes.iteration.max()))
+print("mbs:", sorted(longtimes['param'].unique()))
+
+# Iteration time and its variablility
+itertime = longtimes.groupby(['param', 'iteration']).agg({
+    'start': 'min',
+    'end': 'max'
+})
+itertime.loc[:, 'time'] = itertime.end - itertime.start
+itertime = itertime.reset_index(drop=False).pivot(index='param',
+                                                  columns=['iteration'],
+                                                  values='time')
+itertime['median'] = itertime.median(axis=1)
+itertime['mean'] = itertime.mean(axis=1)
+itertime['min'] = itertime.min(axis=1)
+itertime['max'] = itertime.max(axis=1)
+iteration_variability = itertime[['mean', 'max', 'min']].copy()
+iteration_variability.index.rename('batch', inplace=True)
+iteration_variability.loc[:, 'delta'] = iteration_variability[
+    'max'] - iteration_variability['min']
+iteration_variability.loc[:, 'variability'] = iteration_variability[
+    'delta'] / iteration_variability['mean'] * 100.
+mean_var = iteration_variability['variability'].mean()
+mean_delta = iteration_variability['delta'].mean()
+
+# PLot iteration time and variabililty
+fig, axs = plt.subplots(2, 1, figsize=(10, 8), dpi=140)
+ax = axs[0]
+iteration_variability.plot(y=['mean', 'delta'],
+                           marker='o',
+                           ms=4,
+                           mfc='w',
+                           mew=0.5,
+                           ax=ax)
+ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+ax.xaxis.set_major_locator(MultipleLocator(10))
+ax.grid(ls=':', lw=0.7)
+ax.grid(ls=':', lw=0.3, which='minor')
+ax.set_ylabel('Max-min (s)')
+ax.set_title("Variability of Iteration Time from Traces", y=1.1, fontsize=14)
+plt.suptitle('Mean delta {:.2f}s'.format(mean_delta), y=0.96)
+ax = axs[1]
+iteration_variability.plot(y='variability',
+                           marker='o',
+                           ms=4,
+                           mfc='w',
+                           mew=0.5,
+                           ax=ax)
+ax.xaxis.set_major_locator(MultipleLocator(10))
+ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+ax.grid(ls=':', lw=0.7)
+ax.grid(ls=':', lw=0.3, which='minor')
+ax.set_ylabel('variability (%)')
+ax.set_title("Mean variability {:.2f}%".format(mean_var))
+ax.text(-4, -4, logdir)
+
+plt.tight_layout()
+figfile = "iterationTime.pdf"
+figfile = os.path.join(targetdir, figfile)
+plt.savefig(figfile, bbox_inches="tight")
+print("Saved", figfile)
+
+# Time of CPU calls to compute kernels
+# Remove all cuda... not calculation events
+clean_cpu = getCleanCPUTime(longtimes)
+
+# Remove outliers from CPU time
+# Calculate Z-score per each kernel name
+dfscored = None
+for name, dfname in clean_cpu.groupby(['name']):
+    dfname.loc[:, 'zscore'] = stats.zscore(dfname['duration'])
+    dfname.loc[:, 'median'] = dfname['duration'].median()
+    if dfscored is None:
+        dfscored = dfname
+    else:
+        dfscored = pd.concat([dfscored, dfname], ignore_index=True)
+
+# Replace outliers duration with median time for the kernel name
+dfscored.loc[dfscored['zscore'] > 3, 'duration'] = dfscored['median']
+clean_cpu = dfscored
+
+# Plot Area plots of CPU events (for compute kernels only)
+
 df_ = clean_cpu[['name', 'duration', 'param', 'iteration']].copy()
 df_['duration'] = df_['duration'] * 1000.
 plotArea(
@@ -586,19 +352,7 @@ plotArea(
     title="Compute kernel calls, median time per iteration\n{}".format(logdir),
     yticks=(10, 5),
     units="ms")
-figfile = "CleanCPU_median_call_times_area.pdf"
-figfile = os.path.join(targetdir, figfile)
-plt.savefig(figfile, bbox_inches="tight")
-print("Saved", figfile)
-
-plotArea(
-    df_,
-    series='name',
-    title="Compute kernel calls, min time per iteration\n{}".format(logdir),
-    yticks=(10, 5),
-    av_func='min',
-    units="ms")
-figfile = "CleanCPU_min_call_times_area.pdf"
+figfile = "CPUcomputeKernelCallsTimeArea.pdf"
 figfile = os.path.join(targetdir, figfile)
 plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
@@ -609,84 +363,29 @@ plotArea(df_,
          title="Compute kernel calls number per iteration\n{}".format(logdir),
          agg='count',
          values='name')
-
-figfile = "CleanCPU_numberof_calls_area.pdf"
+figfile = "CPUcomputeKernelCallsCountArea.pdf"
 figfile = os.path.join(targetdir, figfile)
 plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
 
-if args.nooverlaps:
-    # Area plot number of calls on CPU side
-    df_ = nooverlapdf[~nooverlapdf['corrID'].isin(memoryops['corrID'].unique()
-                                                  )].copy()
-    # Count number of calls per one iteration
-    df_ = df_.groupby(['param', 'name', 'iteration'],
-                      as_index=False).agg('size')
+# CPU-GPU syncro time
+event = "cudaMemcpyAsync"
+syncevents = selectEventsByName(longtimes[longtimes['GPU side'] == False],
+                                [event])
 
-    df_ = df_.groupby(['param', 'name'
-                       ]).agg('median').drop(['iteration'],
-                                             axis=1).reset_index(drop=False)
+df_ = syncevents.copy()
+ignorecolumns = [
+    c for c in ['start', 'end', 'corrID', 'prev', 'gap'] if c in df_.columns
+]
+df_ = df_.drop(ignorecolumns, axis=1)
+df_ = df_.groupby(['param', 'name',
+                   'iteration']).agg('sum').reset_index(drop=False)
 
-    df_ = df_.pivot(index="name", columns=['param'], values=['size']).fillna(0)
-    df_.loc[:, 'total'] = df_.sum(axis=1)
-
-    df_ = df_.sort_values(['total'])
-    df_.drop(['total'], axis=1, inplace=True)
-    df_.columns = df_.columns.get_level_values(1)
-
-    n = df_.shape[0]
-    limit = 20
-    fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
-
-    df_.T.plot.area(cmap=cmap, ax=ax)
-    ax.set_xlim(0, None)
-    # ax.yaxis.set_major_locator(MultipleLocator(10))
-    # ax.yaxis.set_minor_locator(MultipleLocator(5))
-    ax.xaxis.set_major_locator(MultipleLocator(10))
-    ax.grid(ls=':', lw=0.7)
-    ax.grid(ls=':', lw=0.3, which='minor')
-    ax.set_ylabel("number of calls)")
-    ax.set_title(
-        "{}\nCPU calls number per iteration for {}\nwithout cudaStreamSync and cudaMemcpyAsync"
-        .format(target, logdir))
-    # Reverse legend order
-    handles, labels = ax.get_legend_handles_labels()
-    handles = handles[::-1][:limit]
-    labels = labels[::-1][:limit]
-    leg = ax.legend(handles,
-                    labels,
-                    ncol=1,
-                    loc='upper left',
-                    frameon=False,
-                    bbox_to_anchor=(1, 1.05))
-    figfile = "CPUnumcalls_noOverlaps_nodatacopy.pdf"
-    figfile = os.path.join(targetdir, figfile)
-    plt.savefig(figfile, bbox_inches="tight")
-    print("Saved", figfile)
-
-# 2.7 Data transfer times
-
-memcopy = longtimes[(longtimes['GPU side'] == True)
-                    & (longtimes['corrID'] != 0)].copy()
-memcopy = selectEventsByName(memcopy, ["cudaMemcpyAsync"])
-
-memcopyagg = memcopy.groupby(['param', 'iteration', 'name'],
-                             as_index=False).agg({'duration': 'sum'})
-memcopyagg = memcopyagg.groupby(
-    ['param', 'name'], as_index=False).agg('median').drop(['iteration'],
-                                                          axis=1)
-df_ = memcopyagg.copy()
-df_ = df_.pivot(index='name', columns='param', values='duration')
-
-# df_ = memcopy.copy()
-# df_ = df_.groupby(['param', 'name',
-#                    'iteration']).agg('sum').reset_index(drop=False)
-# df_ = df_.groupby(['param', 'name']).agg('mean').reset_index(drop=False)
-# memcopy = df_.drop(['iteration'], axis=1).copy()
-# df_ = df_.pivot(index="name", columns=['param'], values=['duration']).fillna(0)
-
-# df_.columns = df_.columns.get_level_values(1)
-df_ = df_ * 1000.
+df_ = df_.groupby(['param', 'name']).agg('median').reset_index(drop=False)
+cpucudaMemcpy = df_.copy()
+df_['duration'] = df_['duration'] * 1000.
+df_ = df_.pivot(index="name", columns=['param'], values=['duration']).fillna(0)
+df_.columns = df_.columns.get_level_values(1)
 
 fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
 
@@ -694,26 +393,40 @@ df_.T.plot(marker='o', ms=4, mfc='w', ax=ax)
 ax.set_xlim(0, None)
 ax.xaxis.set_major_locator(MultipleLocator(10))
 ax.xaxis.set_minor_locator(MultipleLocator(5))
-ax.yaxis.set_major_locator(MultipleLocator(5))
-ax.yaxis.set_minor_locator(MultipleLocator(1))
+ax.yaxis.set_major_locator(MultipleLocator(10))
+ax.yaxis.set_minor_locator(MultipleLocator(5))
 ax.grid(ls=':', lw=0.7)
 ax.grid(ls=':', lw=0.3, which='minor')
-ax.set_ylabel("time (ms)")
-ax.set_title("{}\n{} time per iteration for\n{}".format(target, event, logdir))
+ax.set_ylabel("call time (ms)")
+ax.set_title("{} time per iteration for\n{}".format(event, logdir))
 # Reverse legend order
 handles, labels = ax.get_legend_handles_labels()
-handles = handles[::-1]
-labels = labels[::-1]
+# handles = handles[::-1][:limit]
+# labels = labels[::-1][:limit]
 leg = ax.legend(handles,
                 labels,
                 ncol=1,
                 loc='upper left',
                 frameon=False,
                 bbox_to_anchor=(1, 1.05))
-figfile = "Memcpy_GPUside.pdf"
+figfile = "CPUGPUsync_cudaMemcpyAsync.pdf"
 figfile = os.path.join(targetdir, figfile)
 plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
+
+# Data Copy Time (Memcpy)
+memcopy = longtimes[(longtimes['GPU side'] == True)
+                    & (longtimes['corrID'] != 0)].copy()
+memcopy = selectEventsByName(memcopy, ["cudaMemcpyAsync"])
+
+memcopyagg = memcopy[['param', 'iteration', 'duration']].groupby(
+    ['param', 'iteration'], as_index=False).agg('sum').groupby(
+        ['param'], as_index=False).agg('median').drop('iteration', axis=1)
+memcopyagg = memcopyagg.rename({
+    'duration': 'memcopy',
+    'param': 'batch'
+},
+                               axis=1)
 
 # 3 Prepare CPUGPU DF
 
@@ -791,43 +504,21 @@ print("Saved", figfile)
 df_ = callsandgapsGPU.copy()
 df_.loc[:, 'callandgap'] = df_['duration'] + df_['gap']
 df_ = df_[['name', 'param', 'iteration', 'duration', 'callandgap']]
-df_ = df_.groupby(['param', 'name',
-                   'iteration']).agg('sum').reset_index(drop=False)
+df_ = df_.groupby(['param', 'iteration']).agg('sum').reset_index(drop=False)
+df_ = df_.groupby(['param']).agg('mean').reset_index(drop=False)
 df_.drop(['iteration'], axis=1, inplace=True)
-df_ = df_.groupby(['param', 'name']).agg('mean').reset_index(drop=False)
-df_ = df_.groupby(['param']).agg('sum').reset_index(drop=False)
-df_.set_index('param', drop=True, inplace=True)
+df_.rename({'param': 'batch'}, axis=1, inplace=True)
 callsandgapsGPUagg = df_.copy()
+print("GPU calls and gaps")
+print(callsandgapsGPUagg.head(2))
 
 # 3.2  CPU time, memcpy time, GPU time
-
 print("Memcpy:\n", memcopyagg.head())
 
-CPUGPU = memcopyagg.rename({
-    'param': 'batch',
-    'duration': 'memcpy'
-}, axis=1).copy()
+CPUGPU = memcopyagg.copy()
 
-# df_ = nomemorydf.copy()
-# df_ = df_[['param', 'duration', 'callandgap'
-#            ]].groupby(['param']).agg('sum').reset_index(drop=False).rename(
-#                {
-#                    'param': 'batch',
-#                    'duration': 'CPU calls (NOV-sync time)',
-#                    'callandgap': 'CPU calls with gaps'
-#                },
-#                axis=1)
-
-# CPUGPU = CPUGPU.merge(df_, on="batch")
-
-df_ = callsandgapsGPUagg.reset_index(drop=False).copy()
-df_ = df_.rename(
-    {
-        'param': 'batch',
-        'duration': 'GPU',
-        'callandgap': 'GPU with gaps'
-    },
-    axis=1)
+df_ = callsandgapsGPUagg.copy()
+df_ = df_.rename({'duration': 'GPU', 'callandgap': 'GPU with gaps'}, axis=1)
 
 CPUGPU = CPUGPU.merge(df_, on="batch")
 
@@ -907,12 +598,8 @@ if args.nooverlaps:
     print("Aggregated Nooverlapdf\n", nooverlap_agg.head())
 
 # Merge tables and save CSV
-df = pd.concat([
-    CPUGPU,
-    clean_logs.rename({'value': 'log_time'}, axis=1),
-    clean_gpu.rename({'duration': 'clean GPU'}, axis=1),
-],
-               axis=1)
+df = pd.concat(
+    [CPUGPU, clean_logs.rename({'value': 'log_time'}, axis=1)], axis=1)
 if args.nooverlaps:
     df = pd.concat([
         df,
@@ -1021,13 +708,20 @@ for lim in lims:
     print("Saved", figfile)
 
 # log time as a function of CPU time + memcpy
-maxmbs = 15
+cputime = cpucudaMemcpy[['param', 'duration']].copy()
+# Set ceiling for the sync time (max possible = 1ms)
+maxsynctime = min(cputime.iloc[0]['duration'] * 1.05, 0.001)
+cputime = cputime[cputime['duration'] < maxsynctime]
+print("Sync time")
+print(cputime)
+maxmbs = cputime.param.max()
+print("Max MBS for LR approximation={}".format(maxmbs))
 CPUcolumns = [c for c in df.columns if 'CPU' in c]
 n = len(CPUcolumns) + 1
 fig, axs = plt.subplots(n, 1, figsize=(10, 3 * n), dpi=140)
 for i, col in enumerate(CPUcolumns):
-    sum_column = col + " + memcpy"
-    df.loc[:, sum_column] = df[col] + df['memcpy']
+    sum_column = col + " + memcopy"
+    df.loc[:, sum_column] = df[col] + df['memcopy']
     ax = axs[i]
     df.loc[:maxmbs].plot(x=sum_column,
                          y='log_time',
@@ -1052,26 +746,94 @@ for i, col in enumerate(CPUcolumns):
                                                       target))
 
 ax = axs[n - 1]
-df.loc[:maxmbs].plot(x='memcpy',
+df.loc[:maxmbs].plot(x='memcopy',
                      y='log_time',
                      marker='o',
                      ms=5,
                      mfc='w',
                      ax=ax)
 for i, r in df.loc[:maxmbs].iterrows():
-    ax.annotate(i, (r['memcpy'], r['log_time']),
+    ax.annotate(i, (r['memcopy'], r['log_time']),
                 xytext=(-5, 5),
                 textcoords='offset points',
                 fontsize=7)
-    ax.set_ylabel('log time (s)')
-    ax.set_xlabel('memcpy (s)')
+ax.set_ylabel('log time (s)')
+ax.set_xlabel('memcopy (s)')
+ax.set_title("logtime(memcopy)\n{}".format(target))
 ax.grid(ls=':', lw=0.3, which='minor')
 ax.grid(ls=':', lw=0.7)
 
 plt.tight_layout()
-figfile = "logtime_asfunction_ofCPUtime.pdf"
+figfile = "itertime_asfunction_ofCPUtime.pdf"
 figfile = os.path.join(targetdir, figfile)
 plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
 
+# Approximate itertime(memcopy) with LR
+X = df.loc[:maxmbs]['memcopy'].values
+X = np.reshape(X, (-1, 1))
+Y = df.loc[:maxmbs]['log_time'].values
+lrmodel = linear_model.LinearRegression().fit(X, Y)
+
+f = lrmodel.predict(X)
+fig, ax = plt.subplots(figsize=(8, 5), dpi=140)
+ax.plot(X,
+        Y,
+        label='Itertime(memcopy)',
+        marker='o',
+        ms=4,
+        mfc='white',
+        mew=0.7)
+ax.plot(X, f, label="LR", ls=':')
+ax.set_xlabel('memcopy (s)')
+ax.set_ylabel('iteration time (s)')
+ax.legend()
+fig.suptitle("Itertime(memcopy)\nLR = $a{:.2f} {:+.2f}$".format(
+    lrmodel.coef_[0], lrmodel.intercept_),
+             fontsize=14,
+             y=1.02)
+ax.set_title(logdir, fontsize=10)
+ax.grid(ls=':', lw=0.5)
+figfile = "Approximate_itertime_func_memcopy.pdf"
+figfile = os.path.join(targetdir, figfile)
+plt.savefig(figfile, bbox_inches="tight")
+print("Saved", figfile)
+
+meanCPUtime = df.loc[:maxmbs]['clean CPU'].mean()
+print("Mean CPU time = {:.5f}s".format(meanCPUtime))
+
+X = (df.loc[:maxmbs]['memcopy'] + meanCPUtime).values
+X = np.reshape(X, (-1, 1))
+Y = df.loc[:maxmbs]['log_time'].values
+lrmodel = linear_model.LinearRegression().fit(X, Y)
+
+f = lrmodel.predict(X)
+fig, ax = plt.subplots(figsize=(8, 5), dpi=140)
+ax.plot(X,
+        Y,
+        label='Itertime(CPU+memcopy)',
+        marker='o',
+        ms=4,
+        mfc='white',
+        mew=0.7)
+ax.plot(X, f, label="LR", ls=':')
+ax.set_xlabel('CPU + memcopy (s)')
+ax.set_ylabel('iteration time (s)')
+ax.legend()
+fig.suptitle("Itertime(CPU+memcopy)\nLR = $a{:.2f} {:+.2f}$".format(
+    lrmodel.coef_[0], lrmodel.intercept_),
+             fontsize=14,
+             y=1.02)
+ax.set_title(logdir, fontsize=10)
+ax.grid(ls=':', lw=0.5)
+ax.text(0.01,
+        0.8,
+        "Mean CPU time = {:.5f}s".format(meanCPUtime),
+        horizontalalignment='left',
+        verticalalignment='top',
+        transform=ax.transAxes)
+figfile = "Approximate_itertime_func_CPUmean_plus_memcopy.pdf"
+figfile = os.path.join(targetdir, figfile)
+plt.savefig(figfile, bbox_inches="tight")
+print("Saved", figfile)
 print("Done.")

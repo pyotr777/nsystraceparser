@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Trace Series with a variable parameter. v0.05a.')
+print('Running Trace Series with a variable parameter. v0.07b.')
 
 parser = argparse.ArgumentParser(
     description=
@@ -34,11 +34,14 @@ parser.add_argument("--suffix",
                     help="Traces directory name suffix.")
 parser.add_argument('--date', default=None, help='Set date for the logs path.')
 parser.add_argument("--host", default=None, help="Host name")
+parser.add_argument("--imnet",
+                    default='/host/imagenet/images',
+                    help="Path to the Imagenet images directory.")
 parser.add_argument(
     "--output",
     '-o',
-    default='nsys_trace_$p',
-    help="Traces file name pattern. '$p' will be replaced with parameter value."
+    default='nsys_trace_#p',
+    help="Traces file name pattern. '#p' will be replaced with parameter value."
 )
 parser.add_argument("--parameter",
                     '-p',
@@ -52,20 +55,21 @@ args = parser.parse_args()
 command_template = None
 if (args.arch == "pytorchVGG16"):
     command_template = 'python3 ../mlbench/pytorch/examples/cifar/cifar.py'\
-    ' -e 1 --iter {} -b $p --workers 3 --nvtx '.format(args.iter)
+    ' -e 1 --iter {} -b #p --workers 3 --nvtx '.format(args.iter)
 elif (args.arch == "chainerVGG16"):
     command_template = 'python3 ../mlbench/chainer/train_cifar_model.py -d cifar100'\
-    ' -e 1 --iterations {} -b $p --nvtx '.format(args.iter)
+    ' -e 1 --iterations {} -b #p --nvtx '.format(args.iter)
 else:
-    command_template = 'python3 ../mlbench/pytorch/examples/imagenet/imagenet.py'\
-    ' --arch {} -e 1 --iter {} -b $p --workers 3 --nvtx --imnet /host/imagenet/images/'.format(
-        args.arch, args.iter)
+    command_template = 'python3 ../mlbench/pytorch/examples/imagenet/imagenet_customdataset.py'\
+    ' --arch {} -e 1 --iter {} -b #p --workers 3 --nvtx --imnet {}'.format(
+        args.arch, args.iter,args.imnet)
 
 print('Command to execute:')
 print(command_template)
 # Change parameter values
 if args.parameter is None:
-    parameters = [5, 6, 7, 8, 9, 10, 12, 15] + list(range(20, 201, 10))
+    parameters = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15] + list(
+        range(20, 101, 10))
 else:
     parameters = args.parameter
 print("Parameter values: {}".format(parameters))
@@ -92,15 +96,16 @@ gpu = args.gpu
 print("GPU: {}".format(gpu))
 
 for parameter in parameters:
-    filename = args.output.replace('$p', str(parameter))
+    filename = args.output.replace('#p', str(parameter))
+    print("args.output=({}) Filename: {}".format(args.output, filename))
     # Tracing command
     report_file = os.path.join(logdir, filename)
-    trace_command = 'nsys profile -t cuda,cudnn,nvtx,cublas -o {}'.format(
+    trace_command = 'nsys profile -t cuda,cudnn,osrt,nvtx,cublas -o {}'.format(
         report_file)
 
-    logfilename = 'stdout_{}.log'.format(parameter)
+    logfilename = '{}_stdout.log'.format(filename)
     logfile = os.path.join(logdir, logfilename)
-    command = command_template.replace('$p', str(parameter))
+    command = command_template.replace('#p', str(parameter))
     if os.path.isfile(logfile):
         print("file", logfile, "exists.")
         continue
