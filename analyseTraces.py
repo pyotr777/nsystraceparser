@@ -15,6 +15,8 @@ import string
 import matplotlib
 from matplotlib import pyplot as plt
 from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import AutoLocator
 from matplotlib.ticker import AutoMinorLocator
 from matplotlib import cm
 import seaborn as sns
@@ -26,8 +28,9 @@ import yaml
 import argparse
 from scipy import stats
 from sklearn import linear_model
+import time
 
-version = "1.05g"
+version = "1.010d"
 print("Analyser of series of nsys traces. v.{}.".format(version))
 # Default parameters
 
@@ -97,15 +100,63 @@ def filerCudaEvent(df):
 
 
 # Get int number from string
-def parseIteration(s):
-    return int(s.strip(string.ascii_letters).strip(' ,'))
+def parseIteration(sorg):
+    s = ''
+    if type(sorg) == list:
+        for a in sorg:
+            if 'iteration' in a.lower():
+                s = a
+                break
+    elif type(sorg) == str:
+        try:
+            s = sorg.strip(string.ascii_letters).strip(' ,')
+        except Exception as e:
+            print(e)
+            print(s, type(s))
+            return None
+    elif np.isnan(sorg):
+        return None
+    else:
+        return int(sorg)
+
+    if 'iteration' not in s.lower():
+        return None
+    if len(s) < 1:
+        return None
+    try:
+        i = int(s)
+    except ValueError:
+        s = [
+            c for c in s
+            if c in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+        ]
+        s = ''.join(map(str, s))
+        if len(s) == 0:
+            print("Cannot convert to int '{}' ({})".format(sorg, type(sorg)))
+            print("No numbers found")
+            return None
+        try:
+            i = int(s)
+        except ValueError:
+            print("Cannot convert to int '{}'".format(sorg))
+            print("Value error in '{}'".format(s))
+            return None
+    return i
 
 
 # Return DF with events (names) from the list of async event
 def selectEventsByName(df, names):
     asyncEventsdf = None
     for aname in names:
-        adf = df[df['name'].str.contains(aname)]
+        try:
+            adf = df[(df['name'].notna()) & (df['name'].str.contains(aname))]
+        except ValueError as e:
+            print('Error in selectEventsByName')
+            print(e)
+            print("aname={}, df shape: {}".format(aname, df.shape))
+            print("None name rows:")
+            print(df[df['name'].isna()])
+            raise (ValueError(e))
         if asyncEventsdf is None:
             asyncEventsdf = adf.copy()
         else:
@@ -113,17 +164,55 @@ def selectEventsByName(df, names):
     return asyncEventsdf
 
 
-def getCleanCPUTime(df):
+def getEventsMask(df, names, column='name', debug=False):
+    mask = None
+    for name in names:
+        mask1 = (df[column].str.contains(name))
+        if mask is None:
+            mask = mask1
+        else:
+            mask = (mask | mask1)
+        if debug:
+            print("Filtering  out {}/{} lines".format(len(mask[mask == True]),
+                                                      len(mask)))
+            print("Remaining events: {}".format(df.loc[~mask,
+                                                       'name'].unique()))
+    return mask
+
+
+# def getCleanCPUTime(df):
+#     # Time without cuda... events
+#     # Remove all cuda... and other not calculation events
+#     cuda_names = [
+#         'cudaMemcpy', 'cudaStream', 'cudaEvent', 'cudaMemset',
+#         'cudaBindTexture', 'cudaUnbindTexture', 'cudaEventCreateWithFlags',
+#         'cudaHostAlloc', 'cudaMalloc', 'CUPTI', 'cudaFree', 'cudaLaunchKernel'
+#     ]
+#     clean_cpu = df[(df['GPU side'] == False) & (df['corrID'] > 0)].copy()
+#     cuda_events = selectEventsByName(clean_cpu, cuda_names)
+#     clean_cpu = clean_cpu[~clean_cpu.index.isin(cuda_events.index)]
+#     return clean_cpu
+
+
+def getCleanCPUTime(df, debug=False):
     # Time without cuda... events
     # Remove all cuda... and other not calculation events
     cuda_names = [
         'cudaMemcpy', 'cudaStream', 'cudaEvent', 'cudaMemset',
         'cudaBindTexture', 'cudaUnbindTexture', 'cudaEventCreateWithFlags',
-        'cudaHostAlloc', 'cudaMalloc', 'CUPTI', 'cudaFree'
+        'cudaHostAlloc', 'cudaMalloc', 'CUPTI', 'cudaFree', 'cudaLaunchKernel'
     ]
-    clean_cpu = df[(df['GPU side'] == False) & (df['corrID'] > 0)].copy()
-    cuda_events = selectEventsByName(clean_cpu, cuda_names)
-    clean_cpu = clean_cpu[~clean_cpu.index.isin(cuda_events.index)]
+    clean_cpu = df[(df['GPU side'] == False) & (df['corrID'] > 0) &
+                   (df['name'].notna())].copy()
+    if debug:
+        print("CPU events with corrID: {}".format(clean_cpu.shape[0]))
+    mask = getEventsMask(clean_cpu, cuda_names, debug=debug)
+    if debug:
+        print("Final: Filtering  out {}/{} lines".format(
+            len(mask[mask == True]), len(mask)))
+    clean_cpu = clean_cpu[~mask]
+    if debug:
+        print(clean_cpu['name'].unique())
     return clean_cpu
 
 
@@ -167,8 +256,11 @@ def plotArea(df,
     df_.T.plot.area(cmap=cmap, ax=ax)
     ax.set_xlim(0, None)
     if yticks is not None:
-        ax.yaxis.set_major_locator(MultipleLocator(yticks[0]))
-        ax.yaxis.set_minor_locator(MultipleLocator(yticks[1]))
+        ax.yaxis.set_major_locator(MaxNLocator(yticks[0]))
+        ax.yaxis.set_minor_locator(MaxNLocator(yticks[1]))
+    else:
+        ax.yaxis.set_major_locator(AutoLocator())
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.xaxis.set_major_locator(MultipleLocator(10))
     ax.grid(ls=':', lw=0.7)
     ax.grid(ls=':', lw=0.3, which='minor')
@@ -192,6 +284,7 @@ if not os.path.exists(targetdir):
     os.makedirs(targetdir)
 print("Target dir", targetdir)
 
+time0 = time.perf_counter()
 # Read trace files
 list_command = "ls -1 " + logdir
 files = []
@@ -222,18 +315,20 @@ for param, tracefile in zip(param_values, files):
         print("Parcing", tracefile)
         # Run
         # python3 parseOneTrace.py -f $tracefile --events $events
-        command = ['python3', 'parseOneTrace.py', '-f', tracefile, '--events'
-                   ] + event_patterns
-        print(command)
+        command = [
+            'python3', 'parseOneTraceRapids.py', '-f', tracefile, '--events'
+        ] + event_patterns
+        print(" ".join(command))
         p = subprocess.run(command,
                            stdin=subprocess.PIPE,
                            stderr=subprocess.PIPE,
                            bufsize=0,
                            shell=False)
         if p.returncode == 0:
-            print('Finished OK')
+            print('Convertion finished OK')
         else:
-            print(p.stdout.decode('utf-8'))
+            if p.stdout is not None:
+                print(p.stdout.decode('utf-8'))
             print('ERROR')
             print(p.stderr.decode('utf-8'))
 
@@ -252,13 +347,45 @@ results[['param']] = results[['param']].astype(int)
 # 2.2 Parse iteration numbers
 longtimes = results.copy()
 
-# PArse Iteration numbers
-longtimes['NVTX'] = longtimes['NVTX'].fillna('')
-longtimes.loc[:, 'iteration'] = longtimes["NVTX"].apply(parseIteration)
+# Parse iteration numbers
+slicesize = 1000000
+maxdfsize = 2000000
+time1 = time.perf_counter()
+print("Reading done in {}s".format(time1 - time0))
+print(results.head())
+print("mbs:", sorted(results['param'].unique()))
+if results.shape[0] > maxdfsize:
+    blocks = []
+    for i in range(0, results.shape[0], slicesize):
+        time2 = time.perf_counter()
+        print("\rParsing range {}-{}M lines of {:.1f}M ({:.1f})s.".format(
+            i / 1000000., (i + slicesize) / 1000000.,
+            results.shape[0] / 1000000, time2 - time1),
+              end='')
+        block = results.iloc[i:i + slicesize].copy()
+        iteration_mask = (block['NVTX'].notna()) & (block['NVTX'].str.contains(
+            'iteration', flags=re.IGNORECASE))
+        block.loc[iteration_mask,
+                  'iteration'] = block["NVTX"].apply(parseIteration)
+        # print("Block mbs:", sorted(block['param'].unique()))
+        # print("Block NVTX:", block['NVTX'].unique())
+        blocks.append(block)
+    longtimes = blocks[0].append(blocks[1:])
+
+else:
+    longtimes = results.copy()
+    iteration_mask = (longtimes['NVTX'].notna()) & (
+        longtimes['NVTX'].str.contains('iteration', flags=re.IGNORECASE))
+    longtimes.loc[iteration_mask,
+                  'iteration'] = longtimes["NVTX"].apply(parseIteration)
+
+# longtimes['NVTX'] = longtimes['NVTX'].fillna('')
 longtimes.drop(['NVTX'], axis=1, inplace=True)
-longtimes[['param', 'corrID', 'Type']] = longtimes[['param', 'corrID',
-                                                    'Type']].astype(int)
-iterations = list(longtimes['iteration'].unique())
+longtimes[['param', 'corrID',
+           'Type']] = longtimes[['param', 'corrID',
+                                 'Type']].fillna(-1).astype(int)
+longtimes[['iteration']] = longtimes[['iteration']].fillna(0).astype(int)
+iterations = sorted(list(longtimes['iteration'].unique()))
 longtimes = longtimes[longtimes['iteration'].isin(iterations[2:-2])]
 print("Iterations: {}-{}".format(longtimes['iteration'].min(),
                                  longtimes.iteration.max()))
@@ -301,7 +428,7 @@ ax.grid(ls=':', lw=0.7)
 ax.grid(ls=':', lw=0.3, which='minor')
 ax.set_ylabel('Max-min (s)')
 ax.set_title("Variability of Iteration Time from Traces", y=1.1, fontsize=14)
-plt.suptitle('Mean delta {:.2f}s'.format(mean_delta), y=0.96)
+plt.suptitle('Mean range (max-min) {:.2f}s'.format(mean_delta), y=0.96)
 ax = axs[1]
 iteration_variability.plot(y='variability',
                            marker='o',
@@ -340,6 +467,42 @@ for name, dfname in clean_cpu.groupby(['name']):
 
 # Replace outliers duration with median time for the kernel name
 dfscored.loc[dfscored['zscore'] > 3, 'duration'] = dfscored['median']
+
+memusage = int(clean_cpu.memory_usage(deep=True).sum())
+print("clean_cpu DF memory usage: {} MB.".format(memusage / 100000.))
+
+if memusage > 100000000:
+    print("clean_cpu size too large for the scatter plot of event durations.")
+else:
+    # Scatterplot of CPU event durations for clean_cpu and dfscored
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    axs[0].plot(clean_cpu.param,
+                clean_cpu.duration,
+                marker='o',
+                ms=3,
+                mew=0,
+                alpha=0.5,
+                linestyle='',
+                label=name)
+    axs[1].plot(dfscored.param,
+                dfscored.duration,
+                marker='o',
+                ms=3,
+                mew=0,
+                alpha=0.5,
+                linestyle='',
+                label=name)
+    axs[0].set_ylabel("time (s)")
+    axs[0].set_title("Compute kernel call durations\nAll")
+    axs[1].set_title("Compute kernel call durations\nZscore > 3")
+
+    axs[0].grid(ls=':')
+    axs[1].grid(ls=':')
+    figfile = "CPUcomputeKernelDurations.pdf"
+    figfile = os.path.join(targetdir, figfile)
+    plt.savefig(figfile, bbox_inches="tight")
+    print("Saved", figfile)
+
 clean_cpu = dfscored
 
 # Plot Area plots of CPU events (for compute kernels only)
@@ -350,7 +513,7 @@ plotArea(
     df_,
     series='name',
     title="Compute kernel calls, median time per iteration\n{}".format(logdir),
-    yticks=(10, 5),
+    yticks=(4, 20),
     units="ms")
 figfile = "CPUcomputeKernelCallsTimeArea.pdf"
 figfile = os.path.join(targetdir, figfile)
@@ -415,10 +578,12 @@ plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
 
 # Data Copy Time (Memcpy)
+print("Events without names in longtimes")
+print(longtimes[longtimes['name'].isna()].shape[0])
 memcopy = longtimes[(longtimes['GPU side'] == True)
                     & (longtimes['corrID'] != 0)].copy()
 memcopy = selectEventsByName(memcopy, ["cudaMemcpyAsync"])
-
+print("Memcpy:\n", memcopy.head())
 memcopyagg = memcopy[['param', 'iteration', 'duration']].groupby(
     ['param', 'iteration'], as_index=False).agg('sum').groupby(
         ['param'], as_index=False).agg('median').drop('iteration', axis=1)
@@ -427,6 +592,7 @@ memcopyagg = memcopyagg.rename({
     'param': 'batch'
 },
                                axis=1)
+print("Memcpyagg:\n", memcopyagg.head())
 
 # 3 Prepare CPUGPU DF
 
@@ -513,7 +679,6 @@ print("GPU calls and gaps")
 print(callsandgapsGPUagg.head(2))
 
 # 3.2  CPU time, memcpy time, GPU time
-print("Memcpy:\n", memcopyagg.head())
 
 CPUGPU = memcopyagg.copy()
 
@@ -548,14 +713,19 @@ clean_cpu_agg = clean_cpu_agg.rename(
 print('Clean CPU time df\n', clean_cpu_agg.head())
 CPUGPU = CPUGPU.merge(clean_cpu_agg, on="batch").set_index('batch', drop=True)
 
-# Read IO time
+# Read IO time. CSV file avg.csv has times to read one image by one worker.
 dataio = pd.read_csv(os.path.join(dataiodir, "avg.csv"))
+dataio[['median_read_time',
+        'mean_read_time']] = dataio[['median_read_time',
+                                     'mean_read_time']].astype(float)
+dataio['batch'] = dataio['batch'].astype(int)
+dataio.loc[:,
+           "median_read_time"] = dataio["median_read_time"] * dataio['batch']
+dataio.loc[:, "mean_read_time"] = dataio["mean_read_time"] * dataio['batch']
 dataio.set_index("batch", drop=True, inplace=True)
 dataio = dataio / 1000.  # Convert ms to s
-dataio.loc[:, "median_read_time"] = dataio[
-    "median_read_time"] * dataio.index.values
-dataio.loc[:,
-           "mean_read_time"] = dataio["mean_read_time"] * dataio.index.values
+print("Images read time (IO time)")
+print(dataio.head())
 
 # Read time logs
 clean_logs = pd.read_csv(time_logs)
@@ -712,7 +882,7 @@ cputime = cpucudaMemcpy[['param', 'duration']].copy()
 # Set ceiling for the sync time (max possible = 1ms)
 maxsynctime = min(cputime.iloc[0]['duration'] * 1.05, 0.001)
 cputime = cputime[cputime['duration'] < maxsynctime]
-print("Sync time")
+print("Sync time that is considered to indicate non-GPU time")
 print(cputime)
 maxmbs = cputime.param.max()
 print("Max MBS for LR approximation={}".format(maxmbs))
@@ -836,4 +1006,6 @@ figfile = "Approximate_itertime_func_CPUmean_plus_memcopy.pdf"
 figfile = os.path.join(targetdir, figfile)
 plt.savefig(figfile, bbox_inches="tight")
 print("Saved", figfile)
-print("Done.")
+
+time2 = time.perf_counter()
+print("All done in {:.1f}s.".format(time2 - time0))
