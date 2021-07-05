@@ -41,24 +41,16 @@ import subprocess
 
 pp = pprint.PrettyPrinter(indent=4)
 
-ver = '0.22a-gpu'
+ver = '0.23a-gpu'
 
 print('NVIDIA NSight Systems JSON trace parser v{}.'.format(ver))
 
 parser = argparse.ArgumentParser(
-    description=
-    'Extracts time of CPU-side and GPU-side events and NVTX regions.')
-parser.add_argument("--file",
-                    '-f',
-                    default=None,
-                    required=True,
+    description='Extracts time of CPU-side and GPU-side events and NVTX regions.')
+parser.add_argument("--file", '-f', default=None, required=True,
                     help="Trace filename to parse.")
-parser.add_argument(
-    "--events",
-    default=None,
-    required=False,
-    nargs='*',
-    help="Event name patterns. Multiple space-separated values possible.")
+parser.add_argument("--events", default=None, required=False, nargs='*',
+                    help="Event name patterns. Multiple space-separated values possible.")
 parser.add_argument("--debug", action="store_true", default=False)
 args = parser.parse_args()
 debug = args.debug
@@ -88,8 +80,7 @@ else:
         linecounter += 1
         data.append(json.loads(line))
         if linecounter >= maxlines:
-            print("\rRead {}K lines".format(len(dfs) * maxlines / 1000.),
-                  end='')
+            print("\rRead {}K lines".format(len(dfs) * maxlines / 1000.), end='')
             df = json_normalize(data)
             dfs.append(df)
             data = []
@@ -100,8 +91,7 @@ else:
     print()
     OneDF = dfs[0].append(dfs[1:], ignore_index=True)
     time1 = time.perf_counter()
-    print("File {} loaded and normalized in {:.2f}s".format(
-        args.file, time1 - start_t))
+    print("File {} loaded and normalized in {:.2f}s".format(args.file, time1 - start_t))
     OneDF.to_csv(tmpfile, index=False)
     print("Saved DF to raw CSV file {}".format(tmpfile))
 
@@ -132,8 +122,7 @@ names = OneDF[OneDF['value'].notna()].dropna(axis=1, how='all').copy()
 OneDF = OneDF[OneDF['value'].isna()].dropna(axis=1, how='all')
 if names.shape[0] == 0:
     print("Names DF is empty. Debugging line 200")
-    import pdb
-    pdb.set_trace()
+    sys.exit(1)
 names = names[['id', 'value']]
 
 # Mark events
@@ -150,8 +139,7 @@ OneDF.loc[:, 'event_type'] = 0
 
 
 def markNVTX(df):
-    df.loc[df['NvtxEvent.Timestamp'].notna(),
-           'event_type'] = df['event_type'] + 1
+    df.loc[df['NvtxEvent.Timestamp'].notna(), 'event_type'] = df['event_type'] + 1
     # Set standard start, end and duration columns in seconds
     df.loc[df['event_type'] == 1, 'start'] = df['NvtxEvent.Timestamp'] * 1e-9
     df.loc[df['event_type'] == 1, 'end'] = df['NvtxEvent.EndTimestamp'] * 1e-9
@@ -192,22 +180,18 @@ OneDF.loc[:, 'duration'] = OneDF['end'] - OneDF['start']
 
 # Drop unused DF columns
 nvtx_columns = ['NvtxEvent.Text']
-trace_columns = [
-    'Type', 'TraceProcessEvent.eventClass', 'TraceProcessEvent.name'
-]
+trace_columns = ['Type', 'TraceProcessEvent.eventClass', 'TraceProcessEvent.name']
 kernel_columns = [
     'CudaEvent.memcpy.sizebytes', 'CudaEvent.memcpy.copyKind',
     'CudaEvent.kernel.shortName'
 ]
-other_columns = [
-    'event_type', 'correlationID', 'name_id', 'start', 'end', 'duration'
-]
+other_columns = ['event_type', 'correlationID', 'name_id', 'start', 'end', 'duration']
 columns = nvtx_columns + trace_columns + kernel_columns + other_columns
 OneDF = OneDF[[c for c in columns if c in OneDF.columns]]
 OneDF.dropna(how='all', axis=0, inplace=True)
 OneDF = OneDF[OneDF['event_type'] != 0]
 
-print("OneDF without names DF shape: {}".format(OneDF.shape))
+# print("OneDF without names DF shape: {}".format(OneDF.shape))
 # print("Elementwise kernels:")
 # elementwiseCorrids = OneDF[(OneDF['name_id'] == 111)]['correlationID'].unique()
 # print(OneDF.loc[OneDF['correlationID'].isin(elementwiseCorrids)].head())
@@ -230,30 +214,23 @@ def crossJoinAndMerge(eventsgdf, nvtxgdf, debug=False):
     eventsgdf['key'] = 1
     snvtx['key'] = 1
     try:
-        merged = eventsgdf.merge(snvtx,
-                                 how="outer",
-                                 on="key",
-                                 suffixes=['', '_nvtx'])
+        merged = eventsgdf.merge(snvtx, how="outer", on="key", suffixes=['', '_nvtx'])
     except MemoryError as e:
         print(e)
         print("Couldnt merge eventsgdf and snvtx on GPU")
         print("Memory used by eventsgdf: {}".format(
             eventsgdf.memory_usage(deep=True).sum()))
-        print("Memory used by snvtx: {}".format(
-            snvtx.memory_usage(deep=True).sum()))
+        print("Memory used by snvtx: {}".format(snvtx.memory_usage(deep=True).sum()))
         # Free memory
-        result = subprocess.run([
-            'nvidia-smi', '--query-gpu=memory.total,memory.free',
-            '--format=csv'
-        ],
-                                stdout=subprocess.PIPE)
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total,memory.free', '--format=csv'],
+            stdout=subprocess.PIPE)
         print(result.stdout.decode('utf-8'))
         sys.exit(1)
 
     del merged["key"]
     # filter
-    mask = (merged.start_nvtx <= merged.start) & (merged.end_nvtx >=
-                                                  merged.end)
+    mask = (merged.start_nvtx <= merged.start) & (merged.end_nvtx >= merged.end)
     del merged["start_nvtx"], merged["end_nvtx"]
 
     merged = merged[mask]
@@ -268,15 +245,12 @@ def crossJoinAndMerge(eventsgdf, nvtxgdf, debug=False):
     if merged.shape[0] == 0:
         return None
     # Merge NVTX names
-    merged = merged.merge(nvtxgdf[['NvtxEvent.Text']],
-                          left_on='nvtxid',
-                          right_index=True,
+    merged = merged.merge(nvtxgdf[['NvtxEvent.Text']], left_on='nvtxid', right_index=True,
                           how='left')
     merged.drop(['nvtxid'], axis=1, inplace=True)
     # Aggregate
     try:
-        merged = merged.groupby(['name_id', 'start', 'end', 'event_type'],
-                                as_index=False,
+        merged = merged.groupby(['name_id', 'start', 'end', 'event_type'], as_index=False,
                                 dropna=False).agg({'NvtxEvent.Text': list})
     except Exception as e:
         print(e)
@@ -289,9 +263,23 @@ def crossJoinAndMerge(eventsgdf, nvtxgdf, debug=False):
 time1 = time.perf_counter()
 # Prepare for Cross Join
 try:
-    onegdf = cudf.DataFrame.from_pandas(
-        OneDF[(OneDF.event_type == 2) |
-              (OneDF.event_type == 4)].drop_duplicates())
+    # Convert column types
+    intcolumns = [
+        'name_id', 'TraceProcessEvent.name', 'CudaEvent.kernel.shortName', 'correlationID'
+    ]
+    for c in intcolumns:
+        if c in OneDF.columns:
+            OneDF[c] = OneDF[c].fillna(-1).astype("Int64").replace(-1, np.nan)
+    if debug:
+        # DEBUG: test that OneDF contains cudaMemcpyAsync
+        print("Testing cudaMemcpyAsync in OneDF")
+        print(names[names['value'].str.contains("cudaMemcpyAsync")])
+        memcpy_id = names[names['value'] == 'cudaMemcpyAsync_v3020']['id'].values[0]
+        # DEBUG: check memCpyAsync
+        print("memCpy in OneDF:")
+        print(OneDF[OneDF['name_id'] == memcpy_id])
+    onegdf = cudf.DataFrame.from_pandas(OneDF[(OneDF.event_type == 2) |
+                                              (OneDF.event_type == 4)].drop_duplicates())
 except Exception as e:
     print("Couldnt convert DF to GDF")
     print(e)
@@ -303,8 +291,7 @@ onegdf = onegdf.drop(['NvtxEvent.Text'], axis=1).sort_values(['start'])
 onegdf_ = onegdf[['name_id', 'event_type', 'start', 'end']]
 nvtxgdf = cudf.DataFrame.from_pandas(nvtx[['start', 'end', 'NvtxEvent.Text']])
 try:
-    namesgdf = cudf.DataFrame.from_pandas(
-        names.rename({'value': 'name'}, axis=1))
+    namesgdf = cudf.DataFrame.from_pandas(names.rename({'value': 'name'}, axis=1))
 except KeyError as e:
     print(e)
     print("names DF:")
@@ -327,8 +314,8 @@ for i in range(0, length, slicesize):
     if df is None:
         block = onegdf_.iloc[i:i + slicesize]
         if 'NvtxEvent.Text' not in block.columns:
-            block['NvtxEvent.Text'] = cudf.Series(
-                pa.array([], type=pa.list_(pa.string())))
+            block['NvtxEvent.Text'] = cudf.Series(pa.array([],
+                                                           type=pa.list_(pa.string())))
         df = block
 
     # Merge with onegdf
@@ -336,6 +323,7 @@ for i in range(0, length, slicesize):
     try:
         mergedgdf = onegdf.iloc[i:i + slicesize].merge(
             df, on=['event_type', 'start', 'end', 'name_id'], how='left')
+
     except ValueError:
         print("ValueError")
         pp.pprint(mergedgdf.iloc[i:i + slicesize].head())
@@ -362,41 +350,107 @@ print("eventsgdf shape: {}".format(eventsgdf.shape))
 
 # Fill missing GPU-side event names with CPU-side event names
 # Replace CPU-side cudaLaunchKernel with GPU-side event names
-# Correct CPU-side event names cudaLaunchKernel_v7000
-badnameids = names.loc[names['value'].str.match('cudaLaunchKernel.*'),
-                       'id'].values
+# Rename CPU-side event names cudaLaunchKernel_v7000 to GPU-side pair event name.
+badnameids = names.loc[names['value'].str.match('cudaLaunchKernel.*'), 'id'].values
+# DEBUG: Correct name_id is set to NA at this place.
+# print('Bad names')
+# badnamesdf = names.loc[names['value'].str.match('cudaLaunchKernel.*')]
+# print(badnamesdf)
+
+columns_of_interest_WRT_nameid = [
+    'correlationID', 'TraceProcessEvent.name', 'name_id', 'NvtxEvent.Text',
+    'CudaEvent.kernel.shortName'
+]
+
+# Convert column types
+intcolumns = [
+    'name_id', 'TraceProcessEvent.name', 'CudaEvent.kernel.shortName', 'correlationID'
+]
 # Replace bad nameids if resultdf
+for c in intcolumns:
+    if c in eventsgdf.columns:
+        eventsgdf[c] = eventsgdf[c].astype(int)
 for badid in badnameids:
     eventsgdf['name_id'] = eventsgdf['name_id'].replace(badid, None)
 
 # Select corrID of events with missing names
-corrids = eventsgdf[eventsgdf['name_id'].isna()]['correlationID'].unique()
-# print("{} correlationIDs with empty name_id".format(len(corrids)))
 gdf_ = eventsgdf.copy().sort_values(['correlationID', 'event_type'])
+corrids = gdf_[gdf_['name_id'].isna()]['correlationID'].unique()
 mask = gdf_['correlationID'].isin(corrids)
 # GDF with good names
 gdf_good = gdf_[~mask]
 # GDF with missing names
 gdf_noname = gdf_[mask]
+# print("Names of the events with missing CPU-GPU conterpart names: {}".format(
+#     gdf_noname.name_id.unique()))
+
+checkgdf = gdf_noname.loc[
+    gdf_noname.name_id != gdf_noname['TraceProcessEvent.name'],
+    ['correlationID', 'TraceProcessEvent.name', 'name_id', 'NvtxEvent.Text']]
+if checkgdf.shape[0] != 0:
+    print("ERROR in GDF with missing name pairs (gdf_noname)")
+    print(checkgdf.head())
+    # import pdb
+    # pdb.set_trace()
+    sys.exit(1)
+else:
+    print(
+        "GDF with missing pair event names (gdf_noname) is consistent WRT TraceProcessEvent.name and name_id."
+    )
+    # print(gdf_noname[columns_of_interest_WRT_nameid].sort_values(
+    #     ['correlationID', 'name_id']).head())
 
 print("Fill missing GPU side event names (missing/good) {}/{}.".format(
     gdf_noname.shape[0], gdf_good.shape[0]))
 
 # Fill missing names using temporary column namecopy.
 gdf_ = gdf_noname[['event_type', 'correlationID', 'name_id']]
-gdf_nonameT = gdf_.pivot(index='correlationID',
-                         columns=['event_type'],
+gdf_nonameT = gdf_.pivot(index='correlationID', columns=['event_type'],
                          values=['name_id'])
 gdf_nonameT.columns = list(gdf_nonameT.columns.get_level_values(1))
-gdf_nonameT['name_id'] = None
+# Add empy column to fill with the name_id
+gdf_nonameT['name_id'] = 0
 gdf_nonameT.loc[gdf_nonameT[2].isna(), 'name_id'] = gdf_nonameT[4]
 gdf_nonameT.loc[gdf_nonameT[4].isna(), 'name_id'] = gdf_nonameT[2]
-gdf_nonameT.drop([2, 4], axis=1, inplace=True)
-gdf_noname = gdf_noname.drop('name_id', axis=1).merge(gdf_nonameT,
-                                                      left_on='correlationID',
-                                                      right_index=True)
-gdf_noname['name_id'] = gdf_noname['name_id'].fillna(-1).astype(float).astype(
-    int)
+gdf_nonameT = gdf_nonameT.drop([2, 4], axis=1).reset_index(drop=False)
+
+# print(gdf_noname[['correlationID', 'name_id', 'NvtxEvent.Text']].head())
+# memcpy_in_gdfnoname = gdf_noname[gdf_noname['name_id'] == memcpy_id]
+# memcpy_corrids = memcpy_in_gdfnoname.correlationID.unique()
+# import pdb
+# pdb.set_trace()
+gdf_fillednames = gdf_noname.drop('name_id', axis=1).merge(gdf_nonameT,
+                                                           on='correlationID', how='left')
+
+if debug:
+    print("memCpy:")
+    print(gdf_fillednames[gdf_fillednames['name_id'] == memcpy_id]
+          [columns_of_interest_WRT_nameid])
+
+try:
+    gdf_fillednames[gdf_fillednames['name_id'].notna()]['name_id'] = gdf_fillednames[
+        gdf_fillednames['name_id'].notna()]['name_id'].astype('int32')
+except ValueError:
+    print("Could not convert name_id to int in gdf_fillednames. Values:")
+    print(gdf_fillednames[gdf_fillednames['name_id'].notna()]['name_id'].unique())
+
+# Debug: check that gdf_fillednames has correct name_id.
+checkgdf = gdf_fillednames.loc[
+    gdf_fillednames.name_id != gdf_fillednames['TraceProcessEvent.name'],
+    columns_of_interest_WRT_nameid]
+if checkgdf.shape[0] > 0:
+    checkgdf = checkgdf[~checkgdf['TraceProcessEvent.name'].isin(badnameids)]
+if checkgdf.shape[0] != 0:
+    print("Bad name IDs")
+    print(badnameids)
+    print("ERRORs in merged gdf_fillednames")
+    print(checkgdf.sort_values(['correlationID', 'name_id']).head())
+    # import pdb
+    # pdb.set_trace()
+    sys.exit(1)
+else:
+    print("Filled missing pair event names. OK.")
+
 # print("Elementwise in gdf_noname:")
 # print(gdf_noname.loc[
 #     (gdf_noname['event_type'] == 2) & (gdf_noname['name_id'].notna()) &
@@ -404,15 +458,13 @@ gdf_noname['name_id'] = gdf_noname['name_id'].fillna(-1).astype(float).astype(
 #     ['name_id', 'duration', 'event_type', 'NvtxEvent.Text']].head())
 
 # Append GDFs with missing and good names
-eventsgdf = gdf_good.append([gdf_noname], ignore_index=True)
+eventsgdf = gdf_good.append([gdf_fillednames], ignore_index=True)
 
 time1 = time.perf_counter()
 print("Filled missing names in {:.2f}s".format(time1 - time2))
 
 # Merge namesdf: replace name_id numbers with names
-eventsgdf = eventsgdf.merge(namesgdf,
-                            left_on='name_id',
-                            right_on='id',
+eventsgdf = eventsgdf.merge(namesgdf, left_on='name_id', right_on='id',
                             how='left').drop(['name_id', 'id'], axis=1)
 
 events = eventsgdf.to_pandas()
@@ -431,8 +483,7 @@ events = events.append(OneDF[OneDF.event_type == 1],
                            {'NvtxEvent.Text': 'NVTX'}, axis=1)
 
 final_columns = [
-    'Type', 'name', 'start', 'end', 'duration', 'NVTX', 'correlationID',
-    'event_type'
+    'Type', 'name', 'start', 'end', 'duration', 'NVTX', 'correlationID', 'event_type'
 ]
 
 events = events[final_columns]
