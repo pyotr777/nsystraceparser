@@ -41,7 +41,7 @@ import subprocess
 import traceback
 
 pp = pprint.PrettyPrinter(indent=4)
-ver = '0.24b-gpu'
+ver = '0.25b-gpu'
 print('NVIDIA Nsight Systems JSON trace parser v{}.'.format(ver))
 
 
@@ -101,10 +101,13 @@ def crossJoinAndMerge(eventsgdf, nvtxgdf, debug=False):
 
 def markNVTX(df):
     if 'NvtxEvent.Timestamp' in df.columns:
-        df.loc[df['NvtxEvent.Timestamp'].notna(), 'event_type'] = df['event_type'] + 1
+        df.loc[df['NvtxEvent.Timestamp'].notna(),
+               'event_type'] = df.loc[df['NvtxEvent.Timestamp'].notna(), 'event_type'] + 1
         # Set standard start, end and duration columns in seconds
-        df.loc[df['event_type'] == 1, 'start'] = df['NvtxEvent.Timestamp'] * 1e-9
-        df.loc[df['event_type'] == 1, 'end'] = df['NvtxEvent.EndTimestamp'] * 1e-9
+        mask = (df['event_type'] == 1) & (df['NvtxEvent.Timestamp'].notna())
+        df.loc[mask, 'start'] = df.loc[mask, 'NvtxEvent.Timestamp'] * 1e-9
+        mask = (df['event_type'] == 1) & (df['NvtxEvent.EndTimestamp'].notna())
+        df.loc[mask, 'end'] = df.loc[mask, 'NvtxEvent.EndTimestamp'] * 1e-9
         return df
     else:
         return df

@@ -379,9 +379,8 @@ def main():
             print("Parcing", tracefile)
             # Run
             # python3 parseOneTrace.py -f $tracefile --events $events
-            command = ['python3', 'parseOneTraceRapids.py', '-f', tracefile, '--events']
-            if event_patterns is not None:
-                command += event_patterns
+            command = ['python3', 'parseOneTraceRapids.py', '-f', tracefile]
+
             if args.debug:
                 command += ['--debug']
             print(" ".join(command))
