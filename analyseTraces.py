@@ -30,7 +30,7 @@ from scipy import stats
 from sklearn import linear_model
 import time
 
-version = "1.14b"
+version = "1.14e"
 print("Analyser of series of nsys traces. v.{}.".format(version))
 # Default parameters
 
@@ -221,8 +221,10 @@ def plotArea(df, series='name', title=None, limit=20, agg='sum', yticks=None,
     colors = colors[::-1]
     N = len(colors)
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list("combined", colors, N=N)
-
-    df_.T.plot.area(cmap=cmap, ax=ax)
+    df_ = df_.T
+    # Sort columns
+    df_ = df_.reindex(sorted(df_.columns), axis=1)
+    df_.plot.area(cmap=cmap, ax=ax)
     ax.set_xlim(0, None)
     if yticks is not None:
         ax.yaxis.set_major_locator(MaxNLocator(yticks[0]))
@@ -259,9 +261,9 @@ def plotArea(df, series='name', title=None, limit=20, agg='sum', yticks=None,
             # df_ = df_.sort_values(['total'])
             # df_.drop(['total'], axis=1, inplace=True)
             df_.columns = df_.columns.get_level_values(1)
+            df_ = df_.T
             # Sort columns alphabetically
             df_ = df_.reindex(sorted(df_.columns), axis=1)
-
             n = df_.shape[0]
             colors = plotter.getColorList('tab20', n=20)
             if n > 21:
@@ -271,8 +273,7 @@ def plotArea(df, series='name', title=None, limit=20, agg='sum', yticks=None,
             N = len(colors)
             cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
                 "combined", colors, N=N)
-
-            df_.T.plot.area(cmap=cmap, ax=ax)
+            df_.plot.area(cmap=cmap, ax=ax)
             ax.set_xlim(0, None)
             if yticks is not None:
                 ax.yaxis.set_major_locator(MaxNLocator(yticks[0]))
@@ -662,8 +663,10 @@ def main():
     print("filters: {}".format(filters))
     df_ = clean_gpu.copy()
     df_['duration'] = df_['duration'] * 1000.
-    plotArea(df_, series="name", title=title, values='duration', units='ms',
-             filters=filters)
+    # Sort columns
+    df_ = df_.reindex(sorted(df_.columns), axis=1)
+    plotArea(df_, series="name", title="GPU events for\n{}".format(logdir),
+             values='duration', units='ms', filters=filters)
 
     plt.tight_layout()
     figfile = "GPUevents_Area.pdf"
