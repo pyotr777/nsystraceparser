@@ -133,8 +133,8 @@ def fileToDF(logfile_path, pars, debug=0):
                                 # If more than 1 epoch in one log file,
                                 # copy previous string for epoch > 1, and set new values only for epoch and time.
                                 if debug > 1:
-                                    print('Epoch {}, epoch in the row: {}'.
-                                          format(val, df.loc[indx]['epoch']))
+                                    print('Epoch {}, epoch in the row: {}'.format(
+                                        val, df.loc[indx]['epoch']))
                                     print('Make new row? {}'.format(
                                         not pd.isna(df.loc[indx]['epoch'])))
                                 if not pd.isna(df.loc[indx]['epoch']):
@@ -142,14 +142,12 @@ def fileToDF(logfile_path, pars, debug=0):
                                     df.loc[indx] = df.loc[indx - 1]
                                 df.loc[indx, 'epoch'] = val
                             else:
-                                df.loc[indx,
-                                       parameters[i][j]] = m2.group(j + 1)
+                                df.loc[indx, parameters[i][j]] = m2.group(j + 1)
 
                     else:
                         param_values.append(m2.group(1))
                         if debug > 0:
-                            print("{} := {}".format(parameters[i],
-                                                    m2.group(1)))
+                            print("{} := {}".format(parameters[i], m2.group(1)))
                         df.loc[indx, parameters[i]] = m2.group(1)
 
                     # row +=  param_values
@@ -274,10 +272,8 @@ def readLogs(logdir, pars, debug=0, chainer=False, maxfiles=1):
     if debug > 0:
         print("Looking in", logdir)
     files = []
-    proc = subprocess.Popen(list_command.split(" "),
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            encoding='utf8')
+    proc = subprocess.Popen(list_command.split(" "), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, encoding='utf8')
     for line in iter(proc.stdout.readline, ''):
         line = line.strip(" \n")
         m = filename_pattern.match(line)
@@ -315,15 +311,13 @@ def readLogs(logdir, pars, debug=0, chainer=False, maxfiles=1):
 # Chainer log files from AWS has extra garbage to be removed
 def readLogsAWS(logdir, pars, debug=False):
     filename_pattern = pars["filename_pattern"]  # Log files file names pattern
-    batch_learn_pattern = pars[
-        "batch_learn_pattern"]  # BS and LR read from file pattern
+    batch_learn_pattern = pars["batch_learn_pattern"]  # BS and LR read from file pattern
     output_pattern = pars["output_pattern"]  # Read Chainer output pattern
     remove_str = pars[
         "remove_str"]  # Remove strings list for cleaning output lines before parsing
     list_command = "ls -1 " + logdir
     files = []
-    proc = subprocess.Popen(list_command.split(" "),
-                            stdout=subprocess.PIPE,
+    proc = subprocess.Popen(list_command.split(" "), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT)
     if debug:
         maxfiles = 5
@@ -342,8 +336,7 @@ def readLogsAWS(logdir, pars, debug=False):
     for file in files:
         if debug:
             print(file)
-        df1 = fileToDF_AWS(file, batch_learn_pattern, output_pattern,
-                           remove_str, debug)
+        df1 = fileToDF_AWS(file, batch_learn_pattern, output_pattern, remove_str, debug)
         if len(df1) > 0:
             df = pd.concat([df, df1], ignore_index=True)
         else:
@@ -356,11 +349,7 @@ def readLogsAWS(logdir, pars, debug=False):
 
 # Read minibatch size and 1st epoch time from files.
 # Store in a DataFrame.
-def fileToDF_AWS(logfile,
-                 batch_learn_pattern,
-                 output_pattern,
-                 remove_str,
-                 debug=False):
+def fileToDF_AWS(logfile, batch_learn_pattern, output_pattern, remove_str, debug=False):
     logfile = logfile.strip(" \n")
     filename = os.path.basename(logfile)
     if debug:
@@ -379,8 +368,7 @@ def fileToDF_AWS(logfile,
         time = 0
         epoch = 0
         ind = 0  # DataFrame row numebr (index)
-        df = pd.DataFrame(data=None,
-                          columns=["batch", "learn", "epoch", "time"])
+        df = pd.DataFrame(data=None, columns=["batch", "learn", "epoch", "time"])
         for line in lines:
             s = line.strip(' \n')
             for rmstr in remove_str:
@@ -410,8 +398,8 @@ def convertColumnTypes(df, cols, types):
         types = [types]
 
     if len(cols) != len(types):
-        print("Error: Lists cols and types must be of same length. {}!={}".
-              format(len(cols), len(types)))
+        print("Error: Lists cols and types must be of same length. {}!={}".format(
+            len(cols), len(types)))
         return df
 
     for col, ctype in zip(cols, types):
@@ -452,10 +440,7 @@ def Stratify(idx, df, time_min, time_max, ratio=5, degree=2):
     newlist = []
     for i in idx:
         time = df.iloc[i]["time"]
-        koeff = getMultiplier(time,
-                              time_max,
-                              time_min,
-                              ratio=ratio,
+        koeff = getMultiplier(time, time_max, time_min, ratio=ratio,
                               degree=degree).astype(int)
         newlist.append(i)
         # Insert value i koeff-1 times
@@ -493,11 +478,7 @@ def pickSamplesForGPU(df, GPU, trainN, testN, stratify=False):
         six.print_("before", len(idx_train), end="")
         time_max = df["time"].max()
         time_min = df["time"].min()
-        idx_train = Stratify(idx_train,
-                             df_tmp,
-                             time_min,
-                             time_max,
-                             ratio=ratio,
+        idx_train = Stratify(idx_train, df_tmp, time_min, time_max, ratio=ratio,
                              degree=degree)
         random.shuffle(idx_train)
         print("after", len(idx_train))
@@ -518,10 +499,7 @@ def makeTrainingTestDFs(df, n, trainN, testN, stratify=False):
     df_train = None
     df_test = None
     for GPU in GPUs:
-        train_1, test_1 = pickSamplesForGPU(df,
-                                            GPU,
-                                            trainN / n,
-                                            testN / n,
+        train_1, test_1 = pickSamplesForGPU(df, GPU, trainN / n, testN / n,
                                             stratify=stratify)
         if df_train is None:
             df_train = train_1
@@ -538,14 +516,8 @@ def makeTrainingTestDFs(df, n, trainN, testN, stratify=False):
 # Plot two plots with training samples and test samples
 def plotTrainTestSamples(Xtrain, Ytrain, Xtest, Ytest):
     f, axarr = plt.subplots(1, 2, sharex=True, figsize=(12, 3))
-    sc0 = axarr[0].scatter(x=Xtrain["batch"].values,
-                           y=Ytrain.values,
-                           s=2,
-                           alpha=0.1)
-    sc1 = axarr[1].scatter(x=Xtest["batch"].values,
-                           y=Ytest.values,
-                           s=2,
-                           alpha=.3)
+    sc0 = axarr[0].scatter(x=Xtrain["batch"].values, y=Ytrain.values, s=2, alpha=0.1)
+    sc1 = axarr[1].scatter(x=Xtest["batch"].values, y=Ytest.values, s=2, alpha=.3)
     axarr[0].set_title("training set")
     axarr[1].set_title("test set")
     axarr[0].grid(ls=":", alpha=0.1)
@@ -621,8 +593,7 @@ def getLowestFromSeries(df, group_columns, series, y):
     df_new = pd.DataFrame(columns=group_columns + [series, y])
     for _, group in df.groupby(by=group_columns):
         min_time = np.min(group[y].values)
-        fastest_series = [group.iloc[0][v]
-                          for v in group_columns] + ["fastest", min_time]
+        fastest_series = [group.iloc[0][v] for v in group_columns] + ["fastest", min_time]
         df_new.loc[df_new.shape[0]] = fastest_series
 
     df_m = pd.concat([df_new, df], axis=0, sort=True)
@@ -658,19 +629,15 @@ def series2string(ser, format='compact', debug=False):
     if format == 'dict':
         return ser.to_dict()
     else:
-        print('Wrong format {}. Supported values: compact, dict and full.'.
-              format(format))
+        print('Wrong format {}. Supported values: compact, dict and full.'.format(format))
     return None
 
 
 # Get all rows from DF with the given correlation ID.
 # Search in all df columns with 'correlationId' in the name.
 def LookupCorrelationID(corrId, df):  # nvtx, cuda, kernels, sync):
-    corrid_columns = [
-        c for c in df.columns if c.lower().find('correlationid') >= 0
-    ]
-    df_ = df[df[corrid_columns].eq(corrId).any(1)].copy().dropna(axis=1,
-                                                                 how='all')
+    corrid_columns = [c for c in df.columns if c.lower().find('correlationid') >= 0]
+    df_ = df[df[corrid_columns].eq(corrId).any(1)].copy().dropna(axis=1, how='all')
     return df_
 
 
@@ -678,16 +645,9 @@ def LookupCorrelationID(corrId, df):  # nvtx, cuda, kernels, sync):
 # matching name patterns.
 # No cuDNN or cuBLAS API events should be found here (they do not have correlation IDs).
 # Return DF with columns 'start', 'end', 'duration', 'name', 'NVTX', 'GPU side'
-def SearchCUDAKernelsAndAPI(patterns,
-                            names,
-                            kernels,
-                            traces,
-                            nvtx,
-                            final_columns,
+def SearchCUDAKernelsAndAPI(patterns, names, kernels, traces, nvtx, final_columns,
                             debug=False):
-    event_names_df = names[names.apply(searchEventPattern,
-                                       event_names=patterns,
-                                       axis=1)]
+    event_names_df = names[names.apply(searchEventPattern, event_names=patterns, axis=1)]
     if event_names_df.shape[0] == 0:
         print("No names found for patterns '{}'".format(','.join(patterns)))
         print("Searching again with consize syntax...")
@@ -695,8 +655,7 @@ def SearchCUDAKernelsAndAPI(patterns,
         for pattern in patterns:
             df_ = names[names['value'].str.match(pattern)].copy()
             if debug:
-                print("Found {} names for pattern '{}'.".format(
-                    df_.shape[0], pattern))
+                print("Found {} names for pattern '{}'.".format(df_.shape[0], pattern))
                 print(df_)
             if event_names_df is None:
                 event_names_df = df_
@@ -704,14 +663,13 @@ def SearchCUDAKernelsAndAPI(patterns,
                 event_names_df = event_names_df.append(df_, ignore_index=True)
 
         if event_names_df.shape[0] == 0:
-            print("No names found for patterns '{}'".format(
-                ','.join(patterns)))
+            print("No names found for patterns '{}'".format(','.join(patterns)))
             return None
     ids = event_names_df['id'].values
     matched_traces = pd.DataFrame()
     # Search CUDA kernels by shortName field (ids correspond to kernel names)
-    matched_kernels = kernels[kernels['CudaEvent.kernel.shortName'].isin(
-        ids)].dropna(axis=1, how="all").copy()
+    matched_kernels = kernels[kernels['CudaEvent.kernel.shortName'].isin(ids)].dropna(
+        axis=1, how="all").copy()
     if debug:
         print("Found {} events matching name patterns '{}'.".format(
             event_names_df.shape[0], ','.join(patterns)))
@@ -721,46 +679,41 @@ def SearchCUDAKernelsAndAPI(patterns,
     if matched_kernels.shape[0] > 0:
         # Found some matching CUDA kernels
         matched_kernels = matched_kernels[[
-            'Type', 'CudaEvent.kernel.shortName', 'CudaEvent.startNs',
-            'CudaEvent.endNs', 'CudaEvent.correlationId', 'start', 'end',
-            'duration'
+            'Type', 'CudaEvent.kernel.shortName', 'CudaEvent.startNs', 'CudaEvent.endNs',
+            'CudaEvent.correlationId', 'start', 'end', 'duration'
         ]]
-        matched_kernels.loc[:, 'name'] = matched_kernels[
-            'CudaEvent.kernel.shortName'].apply(lambda s: event_names_df[
-                event_names_df['id'] == s]['value'].values[0])
+        matched_kernels.loc[:,
+                            'name'] = matched_kernels['CudaEvent.kernel.shortName'].apply(
+                                lambda s: event_names_df[event_names_df['id'] == s][
+                                    'value'].values[0])
         matched_kernels.loc[:, 'NVTX'] = np.nan
         matched_kernels.loc[:, 'GPU side'] = True
         matched_kernels.rename(columns={'CudaEvent.correlationId': 'corrID'},
                                inplace=True)
         # Search corresponding CUDA API (traces)
         matched_traces = traces[traces['TraceProcessEvent.correlationId'].isin(
-            matched_kernels['corrID'].unique())].dropna(axis=1,
-                                                        how="all").copy()
+            matched_kernels['corrID'].unique())].dropna(axis=1, how="all").copy()
 
         if matched_traces.shape[0] > 0:
             # Found some matching traces (CPU-side) events
             # TraceProcessEvent.name is not importnat (all same?)
             # using corresponding CUDA kernel names.
             matched_traces.loc[:, 'name'] = matched_traces[
-                'TraceProcessEvent.correlationId'].apply(
-                    lambda s: matched_kernels[matched_kernels['corrID'] == s][
-                        'name'].values[0])
+                'TraceProcessEvent.correlationId'].apply(lambda s: matched_kernels[
+                    matched_kernels['corrID'] == s]['name'].values[0])
             matched_traces.loc[:,
-                               'NVTX'] = matched_traces.apply(NVTXforAPIevent,
-                                                              nvtx=nvtx,
+                               'NVTX'] = matched_traces.apply(NVTXforAPIevent, nvtx=nvtx,
                                                               axis=1)
             matched_traces.loc[:, 'GPU side'] = False
-            matched_traces.rename(
-                columns={'TraceProcessEvent.correlationId': 'corrID'},
-                inplace=True)
+            matched_traces.rename(columns={'TraceProcessEvent.correlationId': 'corrID'},
+                                  inplace=True)
 
     if matched_kernels.shape[0] > 0 and matched_traces.shape[0] > 0:
         # Concat API events (traces) and CUDA kernels
         try:
-            merged = pd.concat([
-                matched_kernels[final_columns], matched_traces[final_columns]
-            ],
-                               ignore_index=True)
+            merged = pd.concat(
+                [matched_kernels[final_columns], matched_traces[final_columns]],
+                ignore_index=True)
         except Exception as e:
             print(e)
             print("Traces head")
@@ -830,12 +783,7 @@ def lookupTimeRange(start, end, df):
 
 # Combine trace evenets within time range and cuda kernels lookup
 # final_columns =  'name', 'start', 'end', 'duration', 'NVTX', 'corrID', 'GPU side', 'Type'
-def lookupAPIandKernelsInTimerange(start,
-                                   end,
-                                   traces,
-                                   kernels,
-                                   names,
-                                   final_columns,
+def lookupAPIandKernelsInTimerange(start, end, traces, kernels, names, final_columns,
                                    debug=False):
     # Lookup traces (API) events in the given range
     # import pdb
@@ -853,17 +801,16 @@ def lookupAPIandKernelsInTimerange(start,
     # If kernels found, than use correlating CUDA kernel name.
     rangedf.loc[:, 'GPU side'] = False
     rangedf.loc[:, 'NVTX'] = 'TBD'  # Set later outside of the function
-    rangedf.rename(columns={'TraceProcessEvent.correlationId': 'corrID'},
-                   inplace=True)
+    rangedf.rename(columns={'TraceProcessEvent.correlationId': 'corrID'}, inplace=True)
     if debug:
         print(
-            "lookupAPIandKernelsInTimerange: In time range {}-{} found {} trace events."
-            .format(start, end, rangedf.shape[0]))
+            "lookupAPIandKernelsInTimerange: In time range {}-{} found {} trace events.".
+            format(start, end, rangedf.shape[0]))
         print(rangedf.dropna(axis=1, how="all").head())
         noname = rangedf[rangedf['name'].isna()]
         if noname.shape[0] > 0:
-            print("{} no name trace events in lookupAPIandKernelsInTimerange.".
-                  format(noname.shape[0]))
+            print("{} no name trace events in lookupAPIandKernelsInTimerange.".format(
+                noname.shape[0]))
             print(noname)
         # print("Columns: {}".format(",".join(rangedf.columns)))
 
@@ -876,30 +823,28 @@ def lookupAPIandKernelsInTimerange(start,
         print("Found no CUDA kernels for corrIDs: {}".format(",".join(
             results['corrID'].unique())))
     else:
-        kernel_events.rename(columns={'CudaEvent.correlationId': 'corrID'},
-                             inplace=True)
-        if kernel_events.loc[kernel_events['CudaEvent.kernel.shortName'].notna(
-        )].shape[0] > 0:
+        kernel_events.rename(columns={'CudaEvent.correlationId': 'corrID'}, inplace=True)
+        if kernel_events.loc[
+                kernel_events['CudaEvent.kernel.shortName'].notna()].shape[0] > 0:
             kernel_events['CudaEvent.kernel.shortName'] = kernel_events[
-                'CudaEvent.kernel.shortName'].fillna(-1).astype(int).replace(
-                    -1, np.nan)
+                'CudaEvent.kernel.shortName'].fillna(-1).astype(int).replace(-1, np.nan)
             try:
                 kernel_events.loc[
                     kernel_events['CudaEvent.kernel.shortName'].notna(),
                     'name'] = kernel_events[
                         kernel_events['CudaEvent.kernel.shortName'].notna(
-                        )]['CudaEvent.kernel.shortName'].apply(lambda s: names[
-                            names['id'] == s]['value'].values[0])
+                        )]['CudaEvent.kernel.shortName'].apply(
+                            lambda s: names[names['id'] == s]['value'].values[0])
             except IndexError as e:
                 print("Error in lookupAPIandKernelsInTimerange")
                 print(e)
                 print("Test names DF")
-                rows = kernel_events[kernel_events[
-                    'CudaEvent.kernel.shortName'].notna()].shape[0]
+                rows = kernel_events[
+                    kernel_events['CudaEvent.kernel.shortName'].notna()].shape[0]
                 print("Have {} valid rows".format(rows))
                 if rows > 0:
-                    for i, s in kernel_events[kernel_events[
-                            'CudaEvent.kernel.shortName'].notna()].iterrows():
+                    for i, s in kernel_events[kernel_events['CudaEvent.kernel.shortName'].
+                                              notna()].iterrows():
                         name = int(s.loc['CudaEvent.kernel.shortName'])
                         test_name_values = names[names['id'] == name]['value']
                         if len(test_name_values) == 0:
@@ -915,19 +860,15 @@ def lookupAPIandKernelsInTimerange(start,
             # Create an empty column "name", it's used in merging with results later.
             kernel_events.loc[:, 'name'] = None
         kernel_events.loc[:, 'GPU side'] = True
-        kernel_events.loc[:,
-                          'NVTX'] = 'TBD'  # Set later outside of the function
+        kernel_events.loc[:, 'NVTX'] = 'TBD'  # Set later outside of the function
         if debug:
             print("Found {} CUDA kernels:".format(kernel_events.shape[0]))
             print(kernel_events.dropna(axis=1, how="all").head())
 
         # Make a merged table with names and corrIDs only
         try:
-            k_ = kernel_events.loc[kernel_events['corrID'] != 0.,
-                                   ['corrID', 'name']]
-            m_ = pd.merge(results[['corrID', 'name']],
-                          k_,
-                          on=['corrID'],
+            k_ = kernel_events.loc[kernel_events['corrID'] != 0., ['corrID', 'name']]
+            m_ = pd.merge(results[['corrID', 'name']], k_, on=['corrID'],
                           suffixes=["", "_kernel"]).fillna('')
 
             if debug:
@@ -960,22 +901,17 @@ def lookupAPIandKernelsInTimerange(start,
                 else:
                     return s.loc['name']
 
-            results.loc[results['corrID'] != 0, 'name'] = results[
-                results['corrID'] != 0].fillna('').apply(setMissingNames,
-                                                         namedf=m_,
-                                                         axis=1)
-            kernel_events.loc[kernel_events['corrID'] != 0,
-                              'name'] = kernel_events[kernel_events['corrID']
-                                                      != 0].fillna('').apply(
-                                                          setMissingNames,
-                                                          namedf=m_,
-                                                          axis=1)
+            results.loc[results['corrID'] != 0,
+                        'name'] = results[results['corrID'] != 0].fillna('').apply(
+                            setMissingNames, namedf=m_, axis=1)
+            kernel_events.loc[kernel_events['corrID'] != 0, 'name'] = kernel_events[
+                kernel_events['corrID'] != 0].fillna('').apply(setMissingNames, namedf=m_,
+                                                               axis=1)
             if debug:
                 print("Testing names")
                 # Test bad names
                 badnames = ['', 'cudaLaunchKernel_v7000']
-                badnamesresults = results[results['name'].fillna('').isin(
-                    badnames)]
+                badnamesresults = results[results['name'].fillna('').isin(badnames)]
                 if badnamesresults.shape[0] > 0:
                     print("No good names found for:")
                     print(badnamesresults)

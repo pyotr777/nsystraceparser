@@ -39,7 +39,7 @@ for file in files:
     filename = os.path.join(args.dir, filename)
 
     # Convert trace to JSON
-    command = "nsys export --type json -o {fname}.json --separate-strings true {fname}.qdrep".format(
+    command = "nsys export --type json -o {fname}.json --force-overwrite true --separate-strings true {fname}.qdrep".format(
         fname=filename)
     print("Converting report {}:".format(filename))
     print(command)

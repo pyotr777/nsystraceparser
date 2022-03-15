@@ -30,7 +30,7 @@ from scipy import stats
 from sklearn import linear_model
 import time
 
-version = "1.14e"
+version = "1.14h"
 print("Analyser of series of nsys traces. v.{}.".format(version))
 # Default parameters
 
@@ -331,14 +331,14 @@ def main():
             sys.exit(1)
 
     print("Parameters:")
-    print(target)
-    print(targetdir)
-    print(logdir)
-    print(trace_name_pattern)
-    print(event_filters)
-    print(dataiodir)
-    print(time_logs)
-    print(dnnmark_logs)
+    print("target", target)
+    print("targetdir", targetdir)
+    print("logdir", logdir)
+    print("trace name pattern", trace_name_pattern)
+    print("event filters", event_filters)
+    print("data logdir", dataiodir)
+    print("time logs", time_logs)
+    print("DNNMark logs", dnnmark_logs)
 
     filters = None
     if args.events is None:
@@ -404,6 +404,8 @@ def main():
         else:
             results = results.append(df_, ignore_index=True)
 
+    if results is None or results.shape[0] == 0:
+        sys.exit(1)
     results[['start', 'end', 'duration']] = results[['start', 'end',
                                                      'duration']].astype(float)
     results[['param']] = results[['param']].astype(int)
@@ -665,14 +667,20 @@ def main():
     df_['duration'] = df_['duration'] * 1000.
     # Sort columns
     df_ = df_.reindex(sorted(df_.columns), axis=1)
-    plotArea(df_, series="name", title="GPU events for\n{}".format(logdir),
-             values='duration', units='ms', filters=filters)
+    title = title = "GPU events time of multiple iterations\n{}".format(logdir)
+    plotArea(df_, series="name", title=title, values='duration', units='ms',
+             filters=filters)
 
     plt.tight_layout()
     figfile = "GPUevents_Area.pdf"
     figfile = os.path.join(targetdir, figfile)
     plt.savefig(figfile, bbox_inches="tight")
     print("Saved", figfile)
+
+    # Save GPU time DF
+    csvfile = os.path.join(targetdir, "GPUevents.csv")
+    clean_gpu.to_csv(csvfile, index=False)
+    print("Saved data to {}".format(csvfile))
 
     callsandgapsGPU = None
 
@@ -831,7 +839,7 @@ def main():
     # Save merged DF
     csvfile = "datamerged.csv"
     path = os.path.join(targetdir, csvfile)
-    df.to_csv(path, index=False)
+    df.to_csv(path)
     print("Saved data to {}.".format(path))
 
     withgapscolumns = [c for c in df.columns if 'gaps' in c]
