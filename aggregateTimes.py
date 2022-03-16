@@ -5,87 +5,130 @@
 import os
 import argparse
 import pandas as pd
-import json
+import numpy as np
 import subprocess
+import string
 import re
+import glob
 
-ver = '0.02'
-description = 'Aggrgating data from JSON files, saving it to a CSV file.'
+ver = '1.02b'
+description = 'Aggrgating trace events and NVTX data from SQlite files, saving it to a CSV files.'
 print('{} v.{}'.format(description, ver))
 
-parser = argparse.ArgumentParser(description=description)
-parser.add_argument("--dir",
-                    '-d',
-                    default=None,
-                    required=True,
-                    help="Directory with JSON traces to parse.")
-parser.add_argument('--traces',
-                    default='nsys_trace_([0-9]+).json',
-                    help="Trace name pattern")
-parser.add_argument('--events',
-                    nargs='*',
-                    default=None,
-                    help="Patterns for searching events and NVTX regions.")
 
-args = parser.parse_args()
-
-list_command = "ls -1 " + args.dir
-files = []
-param_values = []
-proc = subprocess.Popen(list_command.split(" "),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        encoding='utf8')
-for line in iter(proc.stdout.readline, ''):
-    line = line.strip(" \n")
-    m = re.match(args.traces, line)
-    if m:
-        files.append(os.path.abspath(os.path.join(args.dir, line)))
-        param_values.append(m.group(1))
-
-print('{} files in {}'.format(len(files), args.dir))
-
-results = None
-convert_traces = False
-# Convert only if events parameter provided,
-# otherwise read from CSV files.
-if args.events is not None:
-    convert_traces = True
-for param, tracefile in zip(param_values, files):
-    if convert_traces:
-        events = '" "'.join(args.events)
-        # Run
-        # python3 parseOneTrace.py -f $tracefile --events $events
-        command = 'python3 parseOneTrace.py -f {} --events "{}"'.format(
-            tracefile, events)
-        print(command)
-        p = subprocess.run(command.split(' '),
-                           stdin=subprocess.PIPE,
-                           stderr=subprocess.PIPE,
-                           bufsize=0,
-                           shell=False)
-        if p.returncode == 0:
-            print('Finished OK')
+# Get int number from a string of format ['nvtx region name ' 'iteration N']
+# Returns iteration number as int and nvtx region name as string
+def parseIteration(r):
+    if len(r) == 0:
+        return np.nan, np.nan, np.nan
+    r = r['nvtx']
+    nvtx_org = r
+    if r == '':
+        return np.nan, '', nvtx_org
+    r = r.split('\' \'')
+    i = np.nan
+    nvtx = ''
+    for s in r:
+        s = s.strip('[]\'')
+        if 'iteration' in s.lower():
+            i = int(s.strip(string.ascii_letters).strip(' ,'))
         else:
-            print(p.stdout.decode('utf-8'))
-            print('ERROR')
-            print(p.stderr.decode('utf-8'))
-    # Read data from CSV file
-    directory = os.path.dirname(tracefile)
-    csvfile = ('').join(os.path.basename(tracefile).split('.')
-                        [:-1])  # Filename without extension
-    csvfile = csvfile + '.csv'
-    csvfile = os.path.join(directory, csvfile)
-    print('Reading {}'.format(csvfile))
-    df_ = pd.read_csv(csvfile)
-    df_['param'] = param
-    #     display(df_.head())
-    if results is None:
-        results = df_
-    else:
-        results = results.append(df_, ignore_index=True)
+            nvtx = s
+    return i, nvtx, nvtx_org
 
-results.sample(n=8)
-dest_file = os.path.join(args.dir, "agg.csv")
-results.to_csv(dest_file, index=False)
-print('Saved to {}'.format(dest_file))
+
+def main():
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--dir", '-d', default=None, required=True,
+                        help="Directory with nsys traces to parse.")
+    parser.add_argument('--nvtx-filters', nargs='*', default=None,
+                        help="Pattern for searching NVTX regions")
+    parser.add_argument('--event-filters', nargs='*', default=None,
+                        help="Patterns for searching events regions.")
+    parser.add_argument('--debug', action='store_true')
+
+    args = parser.parse_args()
+
+    files_paths = glob.glob(os.path.join(args.dir, '*.sqlite'))
+    trace_name_pattern = re.compile(r"^nsys_trace_([0-9]+)\.sqlite$")
+    files = []
+    param_values = []
+    for fullname in files_paths:
+        filename = os.path.basename(fullname)
+        print(filename, fullname)
+        m = re.match(trace_name_pattern, filename)
+        if m:
+            files.append(os.path.abspath(os.path.join(args.dir, filename)))
+            param_values.append(m.group(1))
+
+    # Mark: parse traces
+    convert_traces = True
+    eventsDF = None
+    nvtxDF = None
+    for param, tracefile in zip(param_values, files):
+        if convert_traces:
+            # Run
+            # python3 parseOneTrace.py -f $tracefile --events $events
+            command = 'python3@parseOneTrace.py@-f@{}'.format(tracefile)
+            if args.nvtx_filters is not None:
+                nvtxs = '@'.join(args.nvtx_filters)
+                command += '@--nvtx-filters@{}'.format(nvtxs)
+            if args.event_filters is not None:
+                events = '@'.join(args.event_filters)
+                print("Events: {}".format(events))
+                command += '@--event-filters@{}'.format(events)
+            print(command.split('@'))
+            p = subprocess.run(command.split('@'), stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0, shell=False)
+            if p.returncode == 0:
+                print(p.stdout.decode('utf-8'))
+                print('Finished OK')
+            else:
+                if p.stdout is not None:
+                    print(p.stdout.decode('utf-8'))
+                print('ERROR')
+                print(p.stderr.decode('utf-8'))
+        # Read data from CSV file
+        directory = os.path.dirname(tracefile)
+        csvfilebase = ('').join(
+            os.path.basename(tracefile).split('.')[:-1])  # Filename without extension
+        print('Reading {}'.format(csvfilebase))
+        # Read to CSV files
+        events_csvfile = csvfilebase + '_evnt.csv'
+        events_csvfile = os.path.join(directory, events_csvfile)
+        events_ = pd.read_csv(events_csvfile)
+        events_.loc[:, 'param'] = param
+        nvtx_csvfile = csvfilebase + '_nvtx.csv'
+        nvtx_csvfile = os.path.join(directory, nvtx_csvfile)
+        nvtx_ = pd.read_csv(nvtx_csvfile)
+        nvtx_.loc[:, 'param'] = param
+
+        if eventsDF is None:
+            eventsDF = events_
+        else:
+            eventsDF = pd.concat([eventsDF, events_], ignore_index=True)
+        if nvtxDF is None:
+            nvtxDF = nvtx_
+        else:
+            nvtxDF = pd.concat([nvtxDF, nvtx_], ignore_index=True)
+
+    eventsDF['nvtx'] = eventsDF['nvtx'].fillna('')
+    eventsDF.loc[:, 'iteration'] = np.nan
+    results = eventsDF.apply(parseIteration, axis=1, result_type='expand')
+    eventsDF.loc[:, ['iteration', 'nvtx', 'nvtx_org']] = results.values
+    for col in ['param', 'correlationId', 'iteration']:
+        eventsDF[col] = eventsDF[col].astype("Int16", errors='ignore')
+
+    # Mark: save CSV files
+    eventsdf_file = "events.csv"
+    nvtxdf_file = "nvtx.csv"
+    eventsDF.to_csv(os.path.join(args.dir, eventsdf_file), index=False)
+    nvtxDF.to_csv(os.path.join(args.dir, nvtxdf_file), index=False)
+    print("Saved events to", os.path.join(args.dir, eventsdf_file))
+    print("Saved nvtx to", os.path.join(args.dir, nvtxdf_file))
+
+    print("All done.")
+
+
+if __name__ == '__main__':
+    main()
