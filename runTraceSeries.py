@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Trace Series with a variable parameter. v0.11a.')
+print('Running Trace Series with a variable parameter. v0.11d.')
 
 parser = argparse.ArgumentParser(
     description=
@@ -53,7 +53,7 @@ else:
 
 more_options = ''
 if datasetname == "imagenet":
-    more_options += '--imnet {} '.format(args.imagenet)
+    more_options += '--imnet {}'.format(args.imagenet)
 elif 'cifar' in datasetname:
     # Do not use cifar100 - it will only change path to logs but cifar100 will be used anyway
     datasetname = 'cifar'
@@ -97,7 +97,7 @@ for parameter in parameters:
     print("Trace filename without extension: {}".format(filename))
     # Tracing command
     report_file = os.path.join(logdir, filename)
-    trace_command = 'nsys profile -t cuda,cudnn,osrt,nvtx,cublas -o {}'.format(
+    trace_command = 'nsys profile -t cuda,cudnn,osrt,cublas,nvtx -s none -o {}'.format(
         report_file)
 
     logfilename = '{}_stdout.log'.format(filename)
@@ -110,19 +110,26 @@ for parameter in parameters:
     with open(logfile, "w+") as f:
         print('Getting GPU info')
         gpu_info = multigpuexec.getGPUinfo(gpu, path=args.basedir)
+        # Set GPU for execution with env var CUDA_VISIBLE_DEVICES
+        my_env = os.environ.copy()
+        my_env[b"CUDA_VISIBLE_DEVICES"] = str(gpu)
+        my_env[b"NVIDIA_VISIBLE_DEVICES"] = str(gpu)
+        p = subprocess.run(
+            'nvidia-smi --query-gpu=gpu_name,count,index --format=csv'.split(' '),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, env=my_env)
+        print(p.stdout.decode('utf-8'))
+        print(p.stderr.decode('utf-8'))
+
         print('Getting CPU info')
         cpu_info = multigpuexec.getCPUinfo()
         f.write("command:{}\n".format(command))
         f.write("GPU{}: {}".format(gpu, gpu_info))
         f.write("{}".format(cpu_info))
-        # Set GPU for execution with env var CUDA_VISIBLE_DEVICES
-        my_env = os.environ.copy()
-        my_env[b"CUDA_VISIBLE_DEVICES"] = str(gpu)
-        my_env[b"NVIDIA_VISIBLE_DEVICES"] = str(gpu)
+
         exec_command = trace_command + ' ' + command
-        multigpuexec.message(exec_command)
+        multigpuexec.message(exec_command.split(' '))
         p = subprocess.run(exec_command.split(' '), stdout=f, stderr=subprocess.STDOUT,
-                           bufsize=0, env=my_env)
+                           bufsize=0, shell=False, env=my_env)
 
     # Convert trace to JSON
     command = "nsys export -f true -t sqlite --separate-strings=true {report}.{ext}".format(
