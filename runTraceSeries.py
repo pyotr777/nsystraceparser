@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from subprocess import Popen
 
-print('Running Trace Series with a variable parameter. v0.10a.')
+print('Running Trace Series with a variable parameter. v0.11a.')
 
 parser = argparse.ArgumentParser(
     description=
@@ -21,11 +21,11 @@ parser.add_argument("--iter", type=int, default=10,
 parser.add_argument("--gpu", default='0',
                     help="GPU number, which GPU to use for running trace commands.")
 parser.add_argument("--dir", default='.', help="Folder to save traces to.")
-parser.add_argument("--arch", default='resnet18', help="CNN model (architecture)")
+parser.add_argument("--model", default='resnet18', help="CNN model (architecture)")
 parser.add_argument("--suffix", default=None, help="Traces directory name suffix.")
 parser.add_argument('--date', default=None, help='Set date for the logs path.')
 parser.add_argument("--host", default=None, help="Host name")
-parser.add_argument("--imnet", default='/host/imagenet10/images',
+parser.add_argument("--imagenet", default='/host/imagenet10/images',
                     help="Path to the Imagenet images directory.")
 parser.add_argument('--dataset', default='imagenet', help='cifar/imagenet')
 parser.add_argument(
@@ -33,20 +33,34 @@ parser.add_argument(
     help="Traces file name pattern. '#p' will be replaced with parameter value.")
 parser.add_argument("--parameter", '-p', type=int, default=None, nargs='*',
                     help="Space-separated list of mini-batch sizes.")
+parser.add_argument('--script', default='examples/cputimer.py',
+                    help="Pytorch script for training on samples.")
+parser.add_argument('--basedir', default='/host/mlbench/',
+                    help='Absolute path to mlbench dirsctory')
+parser.add_argument('--traceext', default='nsys-rep', help="Trace file extension")
 args = parser.parse_args()
 # Change command
 # Use $p placeholder for the varying parameter
-command_template = None
-if (args.arch == "pytorchVGG16"):
-    command_template = 'python3 ../mlbench/pytorch/examples/cifar/cifar.py'\
-    ' -e 1 --iter {} -b #p --workers 3 --nvtx '.format(args.iter)
-elif (args.arch == "chainerVGG16"):
-    command_template = 'python3 ../mlbench/chainer/train_cifar_model.py -d cifar100'\
-    ' -e 1 --iterations {} -b #p --nvtx '.format(args.iter)
+datasetname = ''
+if args.dataset == "auto":
+    # Select Dataset based on the CNN model
+    if "vgg" in args.model:
+        datasetname = "cifar"
+    else:
+        datasetname = "imagenet"
 else:
-    command_template = 'python3 ../mlbench/pytorch/examples/cputimer.py'\
-    ' --arch {} -e 1 --iter {} -b #p --workers 3 --nvtx --imnet {} --dataset {}'.format(
-        args.arch, args.iter,args.imnet, args.dataset)
+    datasetname = args.dataset
+
+more_options = ''
+if datasetname == "imagenet":
+    more_options += '--imnet {} '.format(args.imagenet)
+elif 'cifar' in datasetname:
+    # Do not use cifar100 - it will only change path to logs but cifar100 will be used anyway
+    datasetname = 'cifar'
+
+command_template = "python3 {} --dataset {} -e 1 --iter {} -b #p --workers 3 --nvtx --arch {} {}".format(
+    os.path.join(args.basedir, 'pytorch', args.script), datasetname, args.iter,
+    args.model, more_options)
 
 print('Command to execute:')
 print(command_template)
@@ -68,7 +82,7 @@ if args.suffix is None:
     dirname = date
 else:
     dirname = "{}{}".format(date, args.suffix)
-logdir = os.path.join("logs", host, "traces", args.arch, dirname)
+logdir = os.path.join("logs", host, "traces", args.model, dirname)
 logbase = args.dir
 logdir = os.path.join(logbase, logdir)
 if not os.path.exists(logdir):
@@ -80,7 +94,7 @@ print("GPU: {}".format(gpu))
 
 for parameter in parameters:
     filename = args.output.replace('#p', str(parameter))
-    print("args.output=({}) Filename: {}".format(args.output, filename))
+    print("Trace filename without extension: {}".format(filename))
     # Tracing command
     report_file = os.path.join(logdir, filename)
     trace_command = 'nsys profile -t cuda,cudnn,osrt,nvtx,cublas -o {}'.format(
@@ -95,7 +109,7 @@ for parameter in parameters:
     # Run tracing
     with open(logfile, "w+") as f:
         print('Getting GPU info')
-        gpu_info = multigpuexec.getGPUinfo(gpu, path='/host/mlbench/')
+        gpu_info = multigpuexec.getGPUinfo(gpu, path=args.basedir)
         print('Getting CPU info')
         cpu_info = multigpuexec.getCPUinfo()
         f.write("command:{}\n".format(command))
@@ -111,15 +125,15 @@ for parameter in parameters:
                            bufsize=0, env=my_env)
 
     # Convert trace to JSON
-    command = "nsys export --type json -o {qdrep}.json --separate-strings true {qdrep}.qdrep".format(
-        qdrep=report_file)
+    command = "nsys export -f true -t sqlite --separate-strings=true {report}.{ext}".format(
+        report=filename, ext=args.traceext)
     print("Converting report:")
     print(command)
     # p = subprocess.run(command.split(' '), stdin=subprocess.PIPE,
     #                    stderr=subprocess.PIPE, check=False, universal_newlines=True)
     p = subprocess.run(command.split(' '), stdin=subprocess.PIPE, stderr=subprocess.PIPE,
-                       bufsize=0, shell=False)
+                       bufsize=0, shell=False, check=False, cwd=logdir)
     # if len(p.stderr) > 0:
-    #     print(p.stderr, end='')
+    #     multigpuexec.message(p.stderr, 160)
 
-print("No more tasks to run. Logs are in {}/{}.json files.".format(logdir, args.output))
+print("No more tasks to run. Logs are in {}.".format(logdir))
