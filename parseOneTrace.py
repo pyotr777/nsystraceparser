@@ -37,7 +37,7 @@ from lib import lib3
 
 pp = pprint.PrettyPrinter(indent=4)
 
-ver = '1.02a'
+ver = '1.03c'
 
 print('Extracting data from a SQlight trace file. v.{}'.format(ver))
 
@@ -54,29 +54,50 @@ def NVTXfilterRange(r, nvtx):
     return ranges
 
 
+# Finds encompassing cuDNN events
+# r is a row from the traces DF with start and end fields.
+# Returns list of matching cudnn events.
+def cudnnFilterRange(r, cudnn):
+    start = r['start']
+    end = r['end']
+    cudnn_ = cudnn[cudnn['start'] <= start]
+    cudnn_ = cudnn_[cudnn_['end'] >= end]
+    names = cudnn_['nameId'].unique()
+    return names
+
+
 # Replaces name ID with the name from names DF
 # Input: r is a row with ID to replace, col is the column name with name ID to be replaced,
 # names is the names DF.
 # Returns the event name (to replace name ID)
 def replaceIdWithName(r, col, names):
-    if pd.isna(r[col]):
-        return None
-    vals = None
-    try:
-        vals = names[names['id'] == r[col]]['value']
-        if vals is None:
-            return r[col]
-        elif len(vals) == 0:
-            return r[col]
-        else:
-            return vals.values[0]
-    except Exception as e:
-        print('!' * 25)
-        print(e)
-        print(r)
-        print(col)
-        print("vals: ", vals)
-        raise Exception('error!')
+    ids = r[col]
+    if not isinstance(ids, (list, pd.core.series.Series, np.ndarray)):
+        ids = [ids]
+    # list of values to return
+    retvals = []
+    for id_ in ids:
+        if id_ is None or pd.isna(id_):
+            continue
+        try:
+            vals = names[names['id'] == id_]['value']
+            if vals is None or len(vals) == 0:
+                retvals.append(id_)
+            else:
+                retvals.append(vals.values[0])
+        except Exception as e:
+            print('!' * 25)
+            print(e)
+            print(r)
+            print(col)
+            print("vals: ", vals)
+            # import pdb
+            # pdb.set_trace()
+            raise Exception('error!')
+    # Convet one value list to scalar
+    if len(retvals) == 1:
+        return retvals[0]
+    return retvals
 
 
 def main():
@@ -102,12 +123,18 @@ def main():
         tables = [l[0] for l in tables]
         print(tables)
 
+    cudnns = None
     # Mark: Read from SQlite Tables to DF names, nvtx, kernels, traces
     with sqlite3.connect(args.file) as con:
         names = pd.read_sql_query("SELECT * FROM StringIds;", con)
         nvtx = pd.read_sql_query("SELECT * FROM NVTX_EVENTS;", con)
         kernels = pd.read_sql_query("SELECT * FROM CUPTI_ACTIVITY_KIND_KERNEL;", con)
         traces = pd.read_sql_query("SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;", con)
+        try:
+            cudnns = pd.read_sql_query("SELECT * FROM CUDNN_EVENTS;", con)
+        except:
+            message("No cuDNN events")
+            pass
 
     # Mark: reformat dataframes
 
@@ -132,6 +159,12 @@ def main():
     # Convert to seconds
     kernels['start'] = kernels['start'] * 1e-9
     kernels['end'] = kernels['end'] * 1e-9
+
+    # cuDNN
+    if cudnns is not None:
+        # Convert to seconds
+        cudnns['start'] = cudnns['start'] * 1e-9
+        cudnns['end'] = cudnns['end'] * 1e-9
 
     # Mark: filter kernel names
 
@@ -181,10 +214,18 @@ def main():
     # Mark: merge traces with NVTX
 
     traces.loc[:, 'nvtx'] = traces.apply(lambda x: NVTXfilterRange(x, nvtx), axis=1)
+    if cudnns is not None:
+        traces.loc[:, 'cudnn'] = traces.apply(lambda x: cudnnFilterRange(x, cudnns),
+                                              axis=1)
+        traces['cudnn'] = traces.apply(lambda x: replaceIdWithName(x, 'cudnn', names),
+                                       axis=1)
 
     # Mark: merge traces with kernels
 
-    traces_columns = ['start', 'end', 'nameId', 'nvtx', 'correlationId']
+    traces_columns = [
+        c for c in ['start', 'end', 'nameId', 'nvtx', 'cudnn', 'correlationId']
+        if c in traces.columns
+    ]
     kernel_columns = [
         'start', 'end', 'deviceId', 'correlationId', 'demangledName', 'shortName',
         'mangledName'
