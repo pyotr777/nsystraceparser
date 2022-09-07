@@ -58,7 +58,7 @@ elif 'cifar' in datasetname:
     # Do not use cifar100 - it will only change path to logs but cifar100 will be used anyway
     datasetname = 'cifar'
 
-command_template = "python3 {} --dataset {} -e 1 --iter {} -b #p --workers 3 --nvtx --arch {} {}".format(
+command_template = "python3 {} --dataset {} -e 1 --iter {} -b #p --workers 5 --nvtx --arch {} {}".format(
     os.path.join(args.basedir, 'pytorch', args.script), datasetname, args.iter,
     args.model, more_options)
 

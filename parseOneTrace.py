@@ -37,7 +37,7 @@ from lib import lib3
 
 pp = pprint.PrettyPrinter(indent=4)
 
-ver = '1.03c'
+ver = '1.04a'
 
 print('Extracting data from a SQlight trace file. v.{}'.format(ver))
 
@@ -105,11 +105,7 @@ def main():
         description='NVIDIA NSight Systems JSON trace parser. Extracts time of events.')
     parser.add_argument("--file", '-f', default=None, required=True,
                         help="nsys trace file to parse.")
-    parser.add_argument(
-        "--event-filters", default=None, required=False, nargs='*', help=
-        "Event (kernels etc.) name patterns. Multiple space-separated values possible.")
-    parser.add_argument("--nvtx-filters", default=None, required=False, nargs='*',
-                        help="Patterns for filtering NVTX")
+
     parser.add_argument("--debug", action="store_true", default=False)
     args = parser.parse_args()
     debug = args.debug
@@ -166,53 +162,11 @@ def main():
         cudnns['start'] = cudnns['start'] * 1e-9
         cudnns['end'] = cudnns['end'] * 1e-9
 
-    # Mark: filter kernel names
-
-    # Find IDs for events with the names matching filters
-    # Search for ids in names DF
-
-    if args.event_filters is not None:
-        events = None
-        for pattern in args.event_filters:
-            events_ = names[names['value'].str.match(pattern, flags=re.I)]
-            if events is None:
-                events = events_
-            else:
-                events = pd.concat([events, events_], ignore_index=True).drop_duplicates()
-        event_ids = events['id'].unique()
-
-        # Search for kernels matching patterns
-        matching_kernels = None
-        for i in event_ids:
-            df_ = kernels[(kernels['demangledName'] == i) | (kernels['shortName'] == i) |
-                          (kernels['mangledName'] == i)]
-            if df_.size == 0:
-                continue
-            if matching_kernels is None:
-                matching_kernels = df_
-            else:
-                matching_kernels = pd.concat([matching_kernels, df_], ignore_index=True)
-        kernels = matching_kernels
-
     # Find traces with matching correlation IDs
     matching_corrIDs = sorted(kernels['correlationId'].unique())
     matching_traces = traces[traces['correlationId'].isin(matching_corrIDs)]
 
-    # Mark: filter nvtx
-
-    if args.nvtx_filters is not None:
-        matching_nvtx = None
-        for nvtx_filter in args.nvtx_filters:
-            print(nvtx_filter)
-            nvtx_ = nvtx[nvtx['text'].str.match(nvtx_filter, flags=re.I)]
-        if matching_nvtx is None:
-            matching_nvtx = nvtx_
-        else:
-            matching_nvtx = pd.concat([matching_nvtx, nvtx_])
-        nvtx = matching_nvtx
-
     # Mark: merge traces with NVTX
-
     traces.loc[:, 'nvtx'] = traces.apply(lambda x: NVTXfilterRange(x, nvtx), axis=1)
     if cudnns is not None:
         traces.loc[:, 'cudnn'] = traces.apply(lambda x: cudnnFilterRange(x, cudnns),
