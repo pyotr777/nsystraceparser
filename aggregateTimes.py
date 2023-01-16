@@ -7,11 +7,15 @@ import argparse
 import pandas as pd
 import numpy as np
 import subprocess
+import matplotlib
+from matplotlib import pyplot as plt
+from matplotlib.ticker import MultipleLocator
+from matplotlib import cm
 import string
 import re
 import glob
 
-ver = '1.02b'
+ver = '1.04a'
 description = 'Aggrgating trace events and NVTX data from SQlite files, saving it to a CSV files.'
 print('{} v.{}'.format(description, ver))
 
@@ -46,6 +50,9 @@ def main():
     parser.add_argument('--event-filters', nargs='*', default=None,
                         help="Patterns for searching events regions.")
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument(
+        '--convert-traces', action='store_true', default=False,
+        help="Call parseOneTrace.py overwriting existing events.csv and nvtx.csv files")
 
     args = parser.parse_args()
 
@@ -62,21 +69,20 @@ def main():
             param_values.append(m.group(1))
 
     # Mark: parse traces
-    convert_traces = True
     eventsDF = None
     nvtxDF = None
     for param, tracefile in zip(param_values, files):
-        if convert_traces:
+        if args.convert_traces:
             # Run
             # python3 parseOneTrace.py -f $tracefile --events $events
             command = 'python3@parseOneTrace.py@-f@{}'.format(tracefile)
-            if args.nvtx_filters is not None:
-                nvtxs = '@'.join(args.nvtx_filters)
-                command += '@--nvtx-filters@{}'.format(nvtxs)
-            if args.event_filters is not None:
-                events = '@'.join(args.event_filters)
-                print("Events: {}".format(events))
-                command += '@--event-filters@{}'.format(events)
+            # if args.nvtx_filters is not None:
+            #     nvtxs = '@'.join(args.nvtx_filters)
+            #     command += '@--nvtx-filters@{}'.format(nvtxs)
+            # if args.event_filters is not None:
+            #     events = '@'.join(args.event_filters)
+            #     print("Events: {}".format(events))
+            #     command += '@--event-filters@{}'.format(events)
             print(command.split('@'))
             p = subprocess.run(command.split('@'), stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, bufsize=0, shell=False)
@@ -118,6 +124,10 @@ def main():
     eventsDF.loc[:, ['iteration', 'nvtx', 'nvtx_org']] = results.values
     for col in ['param', 'correlationId', 'iteration']:
         eventsDF[col] = eventsDF[col].astype("Int16", errors='ignore')
+    # Calculate GPU time
+    eventsDF.loc[:, 'duration_gpu'] = eventsDF['end_gpu'] - eventsDF['start_gpu']
+    eventsDF.loc[:, 'duration'] = eventsDF['end'] - eventsDF['start']
+    eventsDF = eventsDF.replace('[]', np.nan)
 
     # Mark: save CSV files
     eventsdf_file = "events.csv"
@@ -127,7 +137,140 @@ def main():
     print("Saved events to", os.path.join(args.dir, eventsdf_file))
     print("Saved nvtx to", os.path.join(args.dir, nvtxdf_file))
 
+    # Plot times of each kernel type
+    times = eventsDF.copy()
+    times = times[times['start_gpu'].notna()]
+    # Drop first and last iterations
+    times['iteration'] = times['iteration'].astype(int)
+    iterations = sorted(times['iteration'].unique())
+    iterations = iterations[1:-1]
+    times = times[times['iteration'].isin(iterations)]
+
+    times.loc[:, 'name'] = times.apply(
+        lambda r: '{} {}'.format(r.loc['shortName'], r.loc['nvtx']), axis=1)
+    usecolumns = ['duration', 'duration_gpu', 'name', 'param', 'iteration']
+    times = times[usecolumns]
+    times = times.groupby(['param', 'name',
+                           'iteration']).agg('sum').reset_index(drop=False)
+    times = times.groupby(['param', 'name']).agg('mean').reset_index(drop=False)
+    times.drop(['iteration'], axis=1, inplace=True)
+
+    # GPU time
+    df_ = times.pivot(index=['name'], values='duration_gpu', columns=['param']).fillna(0)
+    df_.loc[:, 'total'] = df_.sum(axis=1)
+    df_ = df_.sort_values(['total'], ascending=False)
+    df_ = df_.drop(['total'], axis=1)
+    N = df_.shape[0] - 30
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
+    col3 = getColorList('viridis', n=N)
+    col1 = getColorList('tab10', n=10)
+    col2 = getColorList('tab20', n=20)
+    colors = col2 + col1 + col3
+    N = len(colors)
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("combined", colors, N=N)
+    df_.T.plot.area(cmap=cmap, ax=ax)
+    ax.set_xlim(0, None)
+    ax.minorticks_on()
+    ax.xaxis.set_major_locator(MultipleLocator(10))
+    ax.xaxis.set_minor_locator(MultipleLocator(5))
+    ax.grid(ls=':', lw=0.7)
+    ax.grid(ls=':', lw=0.3, which='minor')
+    ax.set_title("Events GPU time per iteration for {}".format(args.dir))
+    ax.text(0,-0.1,"No first and last iterations.\n"\
+            "Time aggregated as sums of times of events of the same type in each iteration,\n"\
+            "mean across iterations.",va='top',ha='left',
+                                                 transform=ax.transAxes)
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1], frameon=False, ncol=2, loc='upper left',
+              bbox_to_anchor=(1, 1))
+    path = os.path.join(args.dir, "cuda_kernel_times.pdf")
+    plt.savefig(path, bbox_inches='tight')
+    plt.close()
+    print(f"Saved {path}")
+
+    # Plot GPU time of filtered events
+    df_ = times.copy()
+    dfT = None
+    if args.event_filters is not None:
+        for substr in args.event_filters:
+            dfs = df_[df_['name'].str.lower().str.contains(substr.lower())]
+            ab = df_.shape[0]
+            a = dfs.shape[0]
+            df_ = df_[~df_['name'].str.lower().str.contains(substr.lower())]
+            b = df_.shape[0]
+            assert ab == a + b, f"DF shape do not add up: {a} + {b} != {df_.shape[0]}(!={AB})"
+            dfs = dfs[['param', 'duration_gpu'
+                       ]].groupby(['param'
+                                   ]).agg('sum').rename(columns={"duration_gpu": substr})
+            if dfT is None:
+                dfT = dfs
+            else:
+                dfT = pd.concat([dfT, dfs], axis=1)
+
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
+        dfT.plot.area(ax=ax)
+        ax.set_xlim(0, None)
+        ax.minorticks_on()
+        ax.xaxis.set_major_locator(MultipleLocator(10))
+        ax.xaxis.set_minor_locator(MultipleLocator(5))
+        ax.grid(ls=':', lw=0.7)
+        ax.grid(ls=':', lw=0.3, which='minor')
+        ax.set_title("Filtered events GPU time per iteration for {}".format(args.dir))
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1], frameon=False, loc='upper left',
+                  bbox_to_anchor=(1, 1), edgecolor='white')
+        path = os.path.join(args.dir, "cuda_kernel_times_filtered.pdf")
+        plt.savefig(path, bbox_inches='tight')
+        plt.close()
+        print(f"Saved {path}")
+        path = os.path.join(args.dir, "cuda_kernel_times_filtered.csv")
+        dfT.to_csv(path)
+        print(f"Saved {path}")
+
+    # Plot GPU times of NVTX ranges (containing substrings from nvtx_filters)
+    dfT = pd.DataFrame()
+    if args.nvtx_filters is not None:
+        for substr in args.nvtx_filters:
+            dfs = eventsDF[eventsDF['nvtx'].str.lower().str.contains(
+                substr.lower())].copy()
+            dfs = dfs[['param', 'iteration', 'shortName', 'duration_gpu']]
+            dfs = dfs.groupby(['param', 'iteration', 'shortName'],
+                              as_index=False).agg('sum')
+            dfs['shortName'] = substr + ' ' + dfs['shortName']
+            dfT_ = dfs.pivot_table(index='param', columns='shortName',
+                                   values='duration_gpu', aggfunc='mean')
+            dfT = pd.concat([dfT, dfT_], axis=1)
+
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=144)
+        dfT.plot.area(ax=ax)
+        ax.set_xlim(0, None)
+        ax.minorticks_on()
+        ax.xaxis.set_major_locator(MultipleLocator(10))
+        ax.xaxis.set_minor_locator(MultipleLocator(5))
+        ax.grid(ls=':', lw=0.7)
+        ax.grid(ls=':', lw=0.3, which='minor')
+        ax.set_title("GPU time per iteration of NVTX ranges for {}".format(args.dir))
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1], frameon=False, loc='upper left',
+                  bbox_to_anchor=(1, 1), edgecolor='white')
+        path = os.path.join(args.dir, "nvtx_gpu_times_filtered.pdf")
+        plt.savefig(path, bbox_inches='tight')
+        plt.close()
+        print(f"Saved {path}")
+        path = os.path.join(args.dir, "nvtx_gpu_times_filtered.csv")
+        dfT.to_csv(path)
+        print(f"Saved {path}")
+
     print("All done.")
+
+
+def getColorList(cmap, n=16):
+    cmap = cm.get_cmap(cmap, n)
+    colors = []
+    for i in range(cmap.N):
+        c = matplotlib.colors.to_hex(cmap(i), keep_alpha=True)
+        colors.append(c)
+    return colors
 
 
 if __name__ == '__main__':
